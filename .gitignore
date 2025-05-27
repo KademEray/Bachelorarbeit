@@ -174,3 +174,5 @@ cython_debug/
 .pypirc
 data/product_dataset.csv
 /output
+/output_streamed
+/product_data
