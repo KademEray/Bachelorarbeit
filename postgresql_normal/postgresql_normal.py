@@ -59,6 +59,7 @@ def apply_sql_structure(sql_path: Path):
         print("✅ Struktur erfolgreich eingespielt.")
     except Exception as e:
         print(f"❌ Fehler beim Einspielen der Struktur: {e}")
+        return
 
 
 def stop_postgres_container():
@@ -94,18 +95,3 @@ def delete_postgres_image():
     except Exception as e:
         print(f"❗ Fehler beim Löschen des Images: {e}")
 
-
-def main():
-    """Hauptfunktion zum Ausführen der Schritte."""
-    try:
-        build_postgres_image()
-        start_postgres_container()
-        print("PostgreSQL-Container ist bereit für die Nutzung.")
-        apply_sql_structure(sql_file)
-    except subprocess.CalledProcessError as e:
-        print(f"Fehler: {e}")
-    
-
-
-if __name__ == "__main__":
-    main()

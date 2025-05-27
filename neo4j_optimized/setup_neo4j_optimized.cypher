@@ -41,8 +41,9 @@ MATCH (u:User)<-[:PURCHASED]-(pp:ProductPurchase)-[:PURCHASED_PRODUCT]->(p:Produ
 MERGE (u)-[:PURCHASED {purchased_at:pp.purchased_at}]->(p);
 
 // Wishlist (Datum)
-MATCH (u:User)-[:WISHLISTED]->(p:Product)
-SET  (u)-[:WISHLISTED {created_at: datetime()}]->(p);  // assumes wishlists table has created_at; else replace
+MATCH (wsrc:Wishlist), (u:User {id: wsrc.user_id}), (p:Product {id: wsrc.product_id})
+MERGE (u)-[w:WISHLISTED]->(p)
+ON CREATE SET w.created_at = coalesce(wsrc.created_at, datetime());
 
 /* ---------- Correct Payment relationship ---------- */
 // Entferne Dummy‑User‑Links
