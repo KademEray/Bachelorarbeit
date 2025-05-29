@@ -173,6 +173,6 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 data/product_dataset.csv
-/output
+/output/*
 /output_streamed
-/product_data
+/product_data/*
