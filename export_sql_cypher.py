@@ -11,6 +11,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
 from tqdm import tqdm
+import html
+import re
 
 # === Helferfunktionen für JSON-Export ===
 def stream_write(file, obj):
@@ -119,8 +121,21 @@ def escape_sql_value(value):
         return "NULL"
     return "'" + str(value).replace("'", "''") + "'"
 
-def escape_cypher_string(value):
-    return str(value).replace("'", "\\'")
+def escape_cypher_string(value: str) -> str:
+    if not value:
+        return ""
+    s = html.unescape(str(value))                     # HTML-Entities (z. B. &quot; → ")
+    s = s.replace("\\", "\\\\")                       # Backslashes escapen
+    s = s.replace("'", "\\'")                         # Einfache Anführungszeichen escapen
+    s = s.replace('"', '\\"')                         # Doppelte Anführungszeichen escapen
+    s = s.replace("’", "\\'").replace("‘", "\\'")     # Unicode-Einzelzeichen
+    s = s.replace("“", '\\"').replace("”", '\\"')     # Unicode-Doppelte Anführungszeichen
+    s = s.replace("–", "-")                           # Gedankenstrich zu normalem Minus
+    s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")  # Zeilenumbrüche
+    s = s.replace(";", ",")
+    s = re.sub(r"\s{2,}", " ", s)                     # Mehrfache Leerzeichen entfernen
+    return s.strip()
+
 
 def export_static_tables_to_sql_and_cypher(json_path: Path,
                                            sql_normal_path: Path,
@@ -156,13 +171,13 @@ def export_static_tables_to_sql_and_cypher(json_path: Path,
                     if table == "categories":
                         name = escape_cypher_string(row['name'])
                         if variant == "normal":
-                            cypher_file.write(f"MERGE (c:Category {{id: {row['id']}}}) SET c.name = '{name}';\n")
+                            cypher_file.write(f"CREATE (c:Category {{id: {row['id']}, name: '{name}'}});\n")
                         else:
-                            cypher_file.write(f"MERGE (c:Category {{id: {row['id']}, name: '{name}'}});\n")
+                            cypher_file.write(f"CREATE (c:Category {{id: {row['id']}, name: '{name}'}});\n")
                     elif table == "products":
                         name = escape_cypher_string(row['name'])
                         cypher_file.write(
-                            f"MERGE (p:Product {{id: {row['id']}}}) SET "
+                            f"CREATE (p:Product {{id: {row['id']}}}) SET "
                             f"p.name = '{name}', p.price = {row['price']}, p.stock = {row['stock']}, "
                             f"p.created_at = datetime('{row['created_at']}'), "
                             f"p.updated_at = datetime('{row['updated_at']}');\n"
@@ -172,13 +187,13 @@ def export_static_tables_to_sql_and_cypher(json_path: Path,
                             cypher_file.write(
                                 f"MATCH (p:Product {{id: {row['product_id']}}}), "
                                 f"(c:Category {{id: {row['category_id']}}}) "
-                                f"MERGE (p)-[:BELONGS_TO]->(c);\n"
+                                f"CREATE (p)-[:BELONGS_TO]->(c);\n"
                             )
                         else:
                             cypher_file.write(
                                 f"MATCH (p:Product {{id: {row['product_id']}}}), "
                                 f"(c:Category {{id: {row['category_id']}}}) "
-                                f"MERGE (c)-[:CONTAINS]->(p);\n"
+                                f"CREATE (c)-[:CONTAINS]->(p);\n"
                             )
 
     print("\n✅ Export abgeschlossen.")

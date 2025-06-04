@@ -25,14 +25,19 @@ def build_neo4j_image():
 def start_neo4j_container():
     """Startet den Neo4j-Container aus dem Image."""
     print(f"🚀 Starte Container '{CONTAINER_NAME}' aus Image '{IMAGE_NAME}' ...")
+
+    host_import_path = str((DOCKERFILE_DIR / "import").resolve())
+
     subprocess.run([
         "docker", "run", "-d", "--rm",
         "--name", CONTAINER_NAME,
         "-e", "NEO4J_AUTH=neo4j/superpassword55",
         "-p", f"{NEO4J_HTTP_PORT}:7474",
         "-p", f"{NEO4J_BOLT_PORT}:7687",
+        "-v", f"{host_import_path}:/var/lib/neo4j/import",   # ← DAS IST WICHTIG!
         IMAGE_NAME
     ], check=True)
+
     print("⏳ Warte auf Initialisierung...")
     time.sleep(10)
     print("✅ Container läuft.")
@@ -91,3 +96,15 @@ def delete_neo4j_image():
     except Exception as e:
         print(f"❗ Fehler beim Löschen des Images: {e}")
 
+def main():
+    """Hauptfunktion zum Ausführen aller Schritte."""
+    try:
+        build_neo4j_image()
+        start_neo4j_container()
+        apply_cypher_structure(cypher_file)
+    except Exception as e:
+        print(f"❗ Fehler im Hauptablauf: {e}")
+
+
+if __name__ == "__main__":
+        main()
