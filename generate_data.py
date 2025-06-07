@@ -134,6 +134,12 @@ def build_dataset(num_users: int, data_dir: Path, out_dir: Path, final_dir: Path
                     "id": pur_id,
                     "user_id": uid, "product_id": prod["id"], "purchased_at": created_ts
                 })
+                stream_write(stream_files["product_views"], {
+                    "id": view_id,
+                    "user_id": uid, "product_id": prod["id"],
+                    "viewed_at": (datetime.fromisoformat(created_ts) - timedelta(minutes=random.randint(1, 10))).isoformat(timespec="seconds")
+                })
+                view_id += 1
                 pur_id += 1
                 total += qty * prod["price"]
                 if random.random() < prod_weights[prod["id"]]:

@@ -13,6 +13,7 @@ import pandas as pd
 from tqdm import tqdm
 import html
 import re
+import csv
 
 # === Helferfunktionen für JSON-Export ===
 def stream_write(file, obj):
@@ -160,43 +161,57 @@ def export_static_tables_to_sql_and_cypher(json_path: Path,
                     columns = ", ".join(row.keys())
                     values = ", ".join(escape_sql_value(v) for v in row.values())
                     sql_file.write(f"INSERT INTO {table} ({columns}) VALUES ({values});\n")
+    
+    # Temporäres CSV-Verzeichnis erstellen
+    csv_tmp_dir = Path("tmp_csv_export")
+    csv_tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    for variant, cypher_path in [("normal", cypher_normal_path), ("optimized", cypher_optimized_path)]:
-        with open(cypher_path, "w", encoding="utf-8") as cypher_file:
-            for table in tqdm(static_tables, desc=f"Cypher Export [{variant}]", ncols=80):
-                rows = data.get(table, [])
-                if not rows:
-                    continue
-                for row in rows:
-                    if table == "categories":
-                        name = escape_cypher_string(row['name'])
-                        if variant == "normal":
-                            cypher_file.write(f"CREATE (c:Category {{id: {row['id']}, name: '{name}'}});\n")
-                        else:
-                            cypher_file.write(f"CREATE (c:Category {{id: {row['id']}, name: '{name}'}});\n")
-                    elif table == "products":
-                        name = escape_cypher_string(row['name'])
-                        cypher_file.write(
-                            f"CREATE (p:Product {{id: {row['id']}}}) SET "
-                            f"p.name = '{name}', p.price = {row['price']}, p.stock = {row['stock']}, "
-                            f"p.created_at = datetime('{row['created_at']}'), "
-                            f"p.updated_at = datetime('{row['updated_at']}');\n"
-                        )
-                    elif table == "product_categories":
-                        if variant == "normal":
-                            cypher_file.write(
-                                f"MATCH (p:Product {{id: {row['product_id']}}}), "
-                                f"(c:Category {{id: {row['category_id']}}}) "
-                                f"CREATE (p)-[:BELONGS_TO]->(c);\n"
-                            )
-                        else:
-                            cypher_file.write(
-                                f"MATCH (p:Product {{id: {row['product_id']}}}), "
-                                f"(c:Category {{id: {row['category_id']}}}) "
-                                f"CREATE (c)-[:CONTAINS]->(p);\n"
-                            )
+    csv_tables = {
+        "products": [
+            "id:ID(Product)", "name", "description",
+            "price:float", "stock:int",
+            "created_at:datetime", "updated_at:datetime"
+        ],
+        "categories": [
+            "id:ID(Category)", "name"
+        ],
+        "product_categories": [
+            "product_id:START_ID(Product)", "category_id:END_ID(Category)", ":TYPE"
+        ]
+    }
+
+    for table, header in csv_tables.items():
+        rows = data.get(table, [])
+        if not rows:
+            continue
+        path = csv_tmp_dir / f"{table}.csv"
+        with open(path, "w", encoding="utf-8", newline='') as f_out:
+            writer = csv.DictWriter(f_out, fieldnames=header)
+            writer.writeheader()
+            for row in rows:
+                row_out = {}
+                for k in header:
+                    if k == ":TYPE":
+                        continue
+                    key = k.split(":")[0]
+                    value = row.get(key)
+                    row_out[k] = value if value is not None else ""
+                if table == "product_categories":
+                    row_out[":TYPE"] = "BELONGS_TO"
+                writer.writerow(row_out)
+
+    # CSV-Dateien in beide Neo4j-Verzeichnisse kopieren
+    for target_dir in ["neo4j_normal/import", "neo4j_optimized/import"]:
+        target_path = Path(target_dir)
+        target_path.mkdir(parents=True, exist_ok=True)
+        for file in csv_tmp_dir.glob("*.csv"):
+            shutil.copy(file, target_path / file.name)
+        print(f"📁 CSVs kopiert nach: {target_path.resolve()}")
+
+    shutil.rmtree(csv_tmp_dir)
 
     print("\n✅ Export abgeschlossen.")
+
 
 # === CLI-Wrapper ===
 if __name__ == "__main__":

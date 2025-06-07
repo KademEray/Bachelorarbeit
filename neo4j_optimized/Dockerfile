@@ -1,4 +1,4 @@
-# Nutze offizielle Neo4j Version 5.19 (stable, performant)
+# Nutze offizielle Neo4j Version 5.26.6 (stable, performant)
 FROM neo4j:5.26.6
 
 # Setze Standard-Zugangsdaten
