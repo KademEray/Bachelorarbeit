@@ -91,3 +91,15 @@ def delete_neo4j_image():
     except Exception as e:
         print(f"❗ Fehler beim Löschen des Images: {e}")
 
+def main():
+    """Hauptfunktion zum Ausführen aller Schritte."""
+    try:
+        build_neo4j_image()
+        start_neo4j_container()
+        apply_cypher_structure(cypher_file)
+    except Exception as e:
+        print(f"❗ Fehler im Hauptablauf: {e}")
+
+
+if __name__ == "__main__":
+        main()

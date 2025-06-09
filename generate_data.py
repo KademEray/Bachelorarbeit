@@ -206,6 +206,21 @@ def build_dataset(num_users: int, data_dir: Path, out_dir: Path, final_dir: Path
             })
             view_id += 1
 
+    # 📌 Sicherstellen, dass mindestens 1 Review existiert
+    reviews_path = out_dir / "reviews.jsonl"
+    if reviews_path.stat().st_size == 0:
+        print("⚠️ Keine Reviews generiert – erzeuge 1 Dummy-Review")
+        random_uid = random.randint(1, num_users)
+        random_prod = random.choice(products)
+        stream_write(stream_files["reviews"], {
+            "id": rev_id,
+            "user_id": random_uid,
+            "product_id": random_prod["id"],
+            "rating": random.randint(1, 5),
+            "comment": None,
+            "created_at": random_date_this_year()
+        })
+
     close_stream_files(stream_files)
     print(f"\n✓ Streaming-Datensatz gespeichert unter: {out_dir.resolve()}")
     print(f"Dateien Zusammensetzen...")

@@ -180,11 +180,19 @@ def export_static_tables_to_sql_and_cypher(json_path: Path,
         ]
     }
 
+    table_to_filename = {
+       "products": "Product.csv",
+        "categories": "Category.csv",
+        "product_categories": "product_categories.csv"
+    }
+
     for table, header in csv_tables.items():
         rows = data.get(table, [])
         if not rows:
             continue
-        path = csv_tmp_dir / f"{table}.csv"
+        filename = table_to_filename[table]
+        path = csv_tmp_dir / filename
+
         with open(path, "w", encoding="utf-8", newline='') as f_out:
             writer = csv.DictWriter(f_out, fieldnames=header)
             writer.writeheader()

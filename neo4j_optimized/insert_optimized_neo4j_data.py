@@ -13,34 +13,26 @@ import shutil
 IMPORT_DIR = Path("import")
 CSV_DIR = IMPORT_DIR
 NEO4J_BIN = "/var/lib/neo4j/bin/neo4j-admin"
-CONTAINER_NAME = "neo5_test_normal"
-IMAGE_NAME = "neo5-normal"
+CONTAINER_NAME = "neo5_test_optimized"
+IMAGE_NAME = "neo5-optimized"
 
 # === Tabellenstruktur ===
+# === Nur benötigte Nodes ===
 NODE_TABLES = {
     "users": ["id:ID(User)", "name", "email", "created_at:datetime"],
     "addresses": ["id:ID(Address)", "user_id:int", "street", "city", "zip", "country", "is_primary:boolean"],
     "orders": ["id:ID(Order)", "user_id:int", "status", "total:float", "created_at:datetime", "updated_at:datetime"],
-    "order_items": ["id:ID(OrderItem)", "order_id:int", "product_id:int", "quantity:int", "price:float"],
     "payments": ["id:ID(Payment)", "order_id:int", "payment_method", "payment_status", "paid_at:datetime"],
     "shipments": ["id:ID(Shipment)", "order_id:int", "tracking_number", "shipped_at:datetime", "delivered_at:datetime", "carrier"],
-    "reviews": ["id:ID(Review)", "user_id:int", "product_id:int", "rating:int", "comment", "created_at:datetime"],
-    "cart_items": ["id:ID(CartItem)", "user_id:int", "product_id:int", "quantity:int", "added_at:datetime"],
-    "product_views": ["id:ID(ProductView)", "user_id:int", "product_id:int", "viewed_at:datetime"],
-    "product_purchases": ["id:ID(ProductPurchase)", "user_id:int", "product_id:int", "purchased_at:datetime"],
+    "wishlists": ["user_id:int", "product_id:int", "created_at:datetime"]
 }
 
 NODE_TYPES = {
     "users": "User",
     "addresses": "Address",
     "orders": "Order",
-    "order_items": "OrderItem",
     "payments": "Payment",
-    "shipments": "Shipment",
-    "cart_items": "CartItem",
-    "product_views": "ProductView",
-    "product_purchases": "ProductPurchase",
-    "reviews": "Review",
+    "shipments": "Shipment"
 }
 
 RELATION_BUILDERS = {
@@ -54,16 +46,6 @@ RELATION_BUILDERS = {
         "order_id:END_ID(Order)": row["id"],
         ":TYPE": "PLACED"
     },
-    "order_item": lambda row: {
-        "order_id:START_ID(Order)": row["order_id"],
-        "orderitem_id:END_ID(OrderItem)": row["id"],
-        ":TYPE": "HAS_ITEM"
-    },
-    "orderitem_product": lambda row: {
-        "orderitem_id:START_ID(OrderItem)": row["id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        ":TYPE": "REFERS_TO"
-    },
     "order_payment": lambda row: {
         "order_id:START_ID(Order)": row["order_id"],
         "payment_id:END_ID(Payment)": row["id"],
@@ -74,71 +56,61 @@ RELATION_BUILDERS = {
         "shipment_id:END_ID(Shipment)": row["id"],
         ":TYPE": "HAS_SHIPMENT"
     },
-    "user_review": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
-        "review_id:END_ID(Review)": row["id"],
-        ":TYPE": "WROTE"
-    },
-    "review_product": lambda row: {
-        "review_id:START_ID(Review)": row["id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        ":TYPE": "REVIEWS"
-    },
-    "user_cartitem": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
-        "cartitem_id:END_ID(CartItem)": row["id"],
-        ":TYPE": "HAS_IN_CART"
-    },
-    "cartitem_product": lambda row: {
-        "cartitem_id:START_ID(CartItem)": row["id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        ":TYPE": "CART_PRODUCT"
-    },
-    "user_productview": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
-        "productview_id:END_ID(ProductView)": row["id"],
-        ":TYPE": "VIEWED"
-    },
-    "productview_product": lambda row: {
-        "productview_id:START_ID(ProductView)": row["id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        ":TYPE": "VIEWED_PRODUCT"
-    },
-    "user_purchased": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
-        "productpurchase_id:END_ID(ProductPurchase)": row["id"],
-        ":TYPE": "PURCHASED"
-    },
-    "productpurchase_product": lambda row: {
-        "productpurchase_id:START_ID(ProductPurchase)": row["id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        ":TYPE": "PURCHASED_PRODUCT"
-    },
     "user_wishlist": lambda row: {
         "user_id:START_ID(User)": row["user_id"],
         "product_id:END_ID(Product)": row["product_id"],
         "created_at:datetime": row["created_at"],
         ":TYPE": "WISHLISTED"
+    },
+    "order_contains": lambda row: {
+        "order_id:START_ID(Order)": row["order_id"],
+        "product_id:END_ID(Product)": row["product_id"],
+        "quantity:int": row["quantity"],
+        "price:float": row["price"],
+        ":TYPE": "CONTAINS"
+    },
+    "user_reviewed": lambda row: {
+        "user_id:START_ID(User)": row["user_id"],
+        "product_id:END_ID(Product)": row["product_id"],
+        "rating:int": row["rating"],
+        "comment": row["comment"],
+        "created_at:datetime": row["created_at"],
+        ":TYPE": "REVIEWED"
+    },
+    "user_cart": lambda row: {
+        "user_id:START_ID(User)": row["user_id"],
+        "product_id:END_ID(Product)": row["product_id"],
+        "quantity:int": row["quantity"],
+        "added_at:datetime": row["added_at"],
+        ":TYPE": "HAS_IN_CART"
+    },
+    "user_viewed": lambda row: {
+        "user_id:START_ID(User)": row["user_id"],
+        "product_id:END_ID(Product)": row["product_id"],
+        "viewed_at:datetime": row["viewed_at"],
+        ":TYPE": "VIEWED"
+    },
+    "user_purchased": lambda row: {
+        "user_id:START_ID(User)": row["user_id"],
+        "product_id:END_ID(Product)": row["product_id"],
+        "purchased_at:datetime": row["purchased_at"],
+        ":TYPE": "PURCHASED"
     }
 }
 
 RELATION_TABLE_SOURCES = {
     "user_address": "addresses",
     "user_order": "orders",
-    "order_item": "order_items",
-    "orderitem_product": "order_items",
     "order_payment": "payments",
     "order_shipment": "shipments",
-    "user_review": "reviews",
-    "review_product": "reviews",
-    "user_cartitem": "cart_items",
-    "cartitem_product": "cart_items",
-    "user_productview": "product_views",
-    "productview_product": "product_views",
-    "user_purchased": "product_purchases",
-    "productpurchase_product": "product_purchases",
-    "user_wishlist": "wishlists"
+    "user_wishlist": "wishlists",
+    "order_contains": "order_items",
+    "user_reviewed": "reviews",
+    "user_cart": "cart_items",
+    "user_viewed": "product_views",
+    "user_purchased": "product_purchases"
 }
+
 
 def stop_neo4j_container():
     print("🛑 Stoppe laufenden Neo4j-Container falls aktiv ...")
