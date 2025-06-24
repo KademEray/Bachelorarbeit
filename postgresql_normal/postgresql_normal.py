@@ -7,12 +7,12 @@ import psycopg2
 IMAGE_NAME = "pg17-normal"
 CONTAINER_NAME = "pg_test_normal"
 POSTGRES_PORT = 5432
-DOCKERFILE_DIR = Path("")  # Hier liegt dein Dockerfile
-sql_file = Path("setup_postgres_normal.sql")
+DOCKERFILE_DIR = Path("./")  # Hier liegt dein Dockerfile
+sql_file = Path("./setup_postgres_normal.sql")
 
 # ----------------------------- Funktionen
 
-def build_postgres_image():
+def build_normal_postgres_image(DOCKERFILE_DIR: Path = DOCKERFILE_DIR):
     """Baut das Docker-Image aus dem Dockerfile."""
     print(f"🛠 Baue Image '{IMAGE_NAME}' aus {DOCKERFILE_DIR} ...")
     subprocess.run([
@@ -21,7 +21,7 @@ def build_postgres_image():
     print("✅ Image erfolgreich gebaut.")
 
 
-def start_postgres_container():
+def start_normal_postgres_container():
     """Startet den PostgreSQL-Container aus dem Image."""
     print(f"🚀 Starte Container '{CONTAINER_NAME}' aus Image '{IMAGE_NAME}' ...")
     subprocess.run([
@@ -37,12 +37,12 @@ def start_postgres_container():
     print("✅ Container läuft.")
 
 
-def apply_sql_structure(sql_path: Path):
+def apply_normal_sql_structure(sql_file: Path = sql_file):
     """Spielt die SQL-Strukturdatei in die Datenbank ein."""
-    print(f"📄 Spiele SQL-Struktur aus {sql_path} ein...")
+    print(f"📄 Spiele SQL-Struktur aus {sql_file} ein...")
 
     try:
-        with open(sql_path, "r", encoding="utf-8") as file:
+        with open(sql_file, "r", encoding="utf-8") as file:
             sql = file.read()
 
         conn = psycopg2.connect(
@@ -62,7 +62,7 @@ def apply_sql_structure(sql_path: Path):
         return
 
 
-def stop_postgres_container():
+def stop_normal_postgres_container():
     print(f"🛑 Versuche Container '{CONTAINER_NAME}' zu stoppen...")
     try:
         subprocess.run(["docker", "stop", CONTAINER_NAME], check=True)
@@ -84,7 +84,7 @@ def stop_postgres_container():
         print(f"❗ Fehler beim Stoppen des Containers: {e}")
 
 
-def delete_postgres_image():
+def delete_normal_postgres_image():
     """Löscht das erstellte Docker-Image."""
     print(f"🗑️  Versuche Image '{IMAGE_NAME}' zu löschen...")
     try:
@@ -95,3 +95,19 @@ def delete_postgres_image():
     except Exception as e:
         print(f"❗ Fehler beim Löschen des Images: {e}")
 
+def main():
+    """Hauptfunktion zum Ausführen des Skripts."""
+    try:
+        # 1) Setup
+        build_normal_postgres_image()
+        start_normal_postgres_container()
+        apply_normal_sql_structure()
+
+        # Hier kannst du weitere Schritte hinzufügen, z.B. Daten einfügen oder Benchmarks durchführen
+
+    except Exception as e:
+        print(f"❗ Ein Fehler ist aufgetreten: {e}")
+
+
+if __name__ == "__main__":
+    main()

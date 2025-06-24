@@ -48,7 +48,10 @@ def stream_write(file, obj):
     file.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
-def build_dataset(num_users: int, data_dir: Path, out_dir: Path, final_dir: Path):
+def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir: Path | str = "output_streamed", final_dir: Path | str = "output") -> None:
+    data_dir  = Path(data_dir)
+    out_dir   = Path(out_dir)
+    final_dir = Path(final_dir)
     out_dir.mkdir(exist_ok=True)
     stream_files = open_stream_files(out_dir, [
         "users", "addresses",

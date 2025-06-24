@@ -5,12 +5,14 @@ import subprocess
 import time
 from pathlib import Path
 from tqdm import tqdm
-import ast
 import re
 import shutil
+import socket
+from neo4j import GraphDatabase
+from neo4j.exceptions import ServiceUnavailable
 
 # === Konfiguration ===
-IMPORT_DIR = Path("import")
+IMPORT_DIR = Path(__file__).resolve().parent / "import"
 CSV_DIR = IMPORT_DIR
 NEO4J_BIN = "/var/lib/neo4j/bin/neo4j-admin"
 CONTAINER_NAME = "neo5_test_normal"
@@ -155,7 +157,7 @@ def stop_neo4j_container():
 
 def start_neo4j_container():
     print("🚀 Starte Neo4j-Container neu ...")
-    data_volume_path = str(Path("neo4j_data").resolve())
+    data_volume_path = str((Path(__file__).resolve().parent / "neo4j_data").resolve())
     subprocess.run([
         "docker", "run", "-d", "--rm",
         "--name", CONTAINER_NAME,
@@ -164,7 +166,7 @@ def start_neo4j_container():
         "-v", f"{data_volume_path}:/data",
         IMAGE_NAME
     ], check=True)
-    time.sleep(10)
+    wait_for_bolt()
     print("✅ Container läuft.")
 
 def fix_cypher_props(text):
@@ -220,10 +222,24 @@ def convert_json_to_csv_refactored(json_file: Path, out_dir: Path):
 
     return sorted(list(out_dir.glob("*.csv")))
 
+def wait_for_bolt(uri="bolt://127.0.0.1:7687", auth=("neo4j","superpassword55"),
+                  timeout=120, delay=2):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            with GraphDatabase.driver(uri, auth=auth) as drv:
+                with drv.session() as s:
+                    s.run("RETURN 1").consume()
+            print("✅ Neo4j ist bereit.")
+            return
+        except ServiceUnavailable:
+            time.sleep(delay)
+    raise RuntimeError("❌ Neo4j kam nicht hoch – Timeout!")
+
 def run_neo4j_import():
     print("📦 Importiere CSV-Dateien in Neo4j (Docker) ...")
     host_import_path = str(CSV_DIR.resolve())
-    data_volume_path = str(Path("neo4j_data").resolve())
+    data_volume_path = str((Path(__file__).resolve().parent / "neo4j_data").resolve())
 
     cmd = [
         "docker", "run", "--rm", "--user", "7474:7474",
@@ -272,7 +288,7 @@ def cleanup():
     shutil.rmtree(CSV_DIR)
 
 def reset_database_directory():
-    db_path = Path("neo4j_data")
+    db_path = Path(__file__).resolve().parent / "neo4j_data"
     if db_path.exists() and db_path.is_dir():
         print("🧨 Entferne bestehenden Neo4j-Datenbank-Ordner ...")
         shutil.rmtree(db_path)

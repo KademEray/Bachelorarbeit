@@ -8,107 +8,160 @@ from tqdm import tqdm
 import ast
 import re
 import shutil
+import socket
+from neo4j import GraphDatabase
+from neo4j.exceptions import ServiceUnavailable
 
 # === Konfiguration ===
-IMPORT_DIR = Path("import")
+IMPORT_DIR = Path(__file__).resolve().parent / "import"
 CSV_DIR = IMPORT_DIR
 NEO4J_BIN = "/var/lib/neo4j/bin/neo4j-admin"
 CONTAINER_NAME = "neo5_test_optimized"
 IMAGE_NAME = "neo5-optimized"
 
-# === Tabellenstruktur ===
-# === Nur benötigte Nodes ===
+# === Tabellenstruktur für Optimized ===
 NODE_TABLES = {
-    "users": ["id:ID(User)", "name", "email", "created_at:datetime"],
-    "addresses": ["id:ID(Address)", "user_id:int", "street", "city", "zip", "country", "is_primary:boolean"],
-    "orders": ["id:ID(Order)", "user_id:int", "status", "total:float", "created_at:datetime", "updated_at:datetime"],
-    "payments": ["id:ID(Payment)", "order_id:int", "payment_method", "payment_status", "paid_at:datetime"],
-    "shipments": ["id:ID(Shipment)", "order_id:int", "tracking_number", "shipped_at:datetime", "delivered_at:datetime", "carrier"],
-    "wishlists": ["user_id:int", "product_id:int", "created_at:datetime"]
+    "users": [
+        "id:ID(User)",
+        "name",
+        "email",
+        "created_at:datetime"
+    ],
+    "products": [
+        "id:ID(Product)",
+        "name",
+        "description",
+        "price:float",
+        "stock:int",
+        "created_at:datetime",
+        "updated_at:datetime"
+    ],
+    "categories": [
+        "id:ID(Category)",
+        "name"
+    ],
+    "addresses": [
+        "id:ID(Address)",
+        "user_id:int",
+        "street",
+        "city",
+        "zip",
+        "country",
+        "is_primary:boolean"
+    ],
+    "orders": [
+        "id:ID(Order)",
+        "user_id:int",
+        "status",
+        "total:float",
+        "created_at:datetime",
+        "updated_at:datetime"
+    ],
+    "payments": [
+        "id:ID(Payment)",
+        "order_id:int",
+        "payment_method",
+        "payment_status",
+        "paid_at:datetime"
+    ],
+    "shipments": [
+        "id:ID(Shipment)",
+        "order_id:int",
+        "tracking_number",
+        "shipped_at:datetime",
+        "delivered_at:datetime",
+        "carrier"
+    ]
 }
 
+# === Mapping Node-Table → Node-Typ ===
 NODE_TYPES = {
-    "users": "User",
-    "addresses": "Address",
-    "orders": "Order",
-    "payments": "Payment",
-    "shipments": "Shipment"
+    "users":       "User",
+    "products":    "Product",
+    "categories":  "Category",
+    "addresses":   "Address",
+    "orders":      "Order",
+    "payments":    "Payment",
+    "shipments":   "Shipment",
 }
 
+# === Relationship-Builder für direct Relationships ===
 RELATION_BUILDERS = {
     "user_address": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
+        "user_id:START_ID(User)":     row["user_id"],
         "address_id:END_ID(Address)": row["id"],
-        ":TYPE": "HAS_ADDRESS"
+        ":TYPE":                      "HAS_ADDRESS"
     },
     "user_order": lambda row: {
         "user_id:START_ID(User)": row["user_id"],
         "order_id:END_ID(Order)": row["id"],
-        ":TYPE": "PLACED"
+        ":TYPE":                  "PLACED"
     },
     "order_payment": lambda row: {
-        "order_id:START_ID(Order)": row["order_id"],
+        "order_id:START_ID(Order)":   row["order_id"],
         "payment_id:END_ID(Payment)": row["id"],
-        ":TYPE": "PAID_WITH"
+        ":TYPE":                      "PAID_WITH"
     },
     "order_shipment": lambda row: {
-        "order_id:START_ID(Order)": row["order_id"],
+        "order_id:START_ID(Order)":    row["order_id"],
         "shipment_id:END_ID(Shipment)": row["id"],
-        ":TYPE": "HAS_SHIPMENT"
+        ":TYPE":                       "SHIPPED"
     },
     "user_wishlist": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        "created_at:datetime": row["created_at"],
-        ":TYPE": "WISHLISTED"
+    "user_id:START_ID(User)":   row["user_id"],
+    "product_id:END_ID(Product)": row["product_id"],
+    # fehlt der Key → None  ⇒  Property wird einfach weggelassen
+    "created_at:datetime":      row.get("created_at"),
+    ":TYPE":                    "WISHLISTED"
     },
     "order_contains": lambda row: {
-        "order_id:START_ID(Order)": row["order_id"],
+        "order_id:START_ID(Order)":   row["order_id"],
         "product_id:END_ID(Product)": row["product_id"],
-        "quantity:int": row["quantity"],
-        "price:float": row["price"],
-        ":TYPE": "CONTAINS"
+        "quantity:int":               row["quantity"],
+        "price:float":                row["price"],
+        ":TYPE":                      "CONTAINS"
     },
     "user_reviewed": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
+        "user_id:START_ID(User)":     row["user_id"],
         "product_id:END_ID(Product)": row["product_id"],
-        "rating:int": row["rating"],
-        "comment": row["comment"],
-        "created_at:datetime": row["created_at"],
-        ":TYPE": "REVIEWED"
+        "rating:int":                 row["rating"],
+        "comment":                    row["comment"],
+        "created_at:datetime":        row["created_at"],
+        ":TYPE":                      "REVIEWED"
     },
     "user_cart": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
+        "user_id:START_ID(User)":     row["user_id"],
         "product_id:END_ID(Product)": row["product_id"],
-        "quantity:int": row["quantity"],
-        "added_at:datetime": row["added_at"],
-        ":TYPE": "HAS_IN_CART"
+        "quantity:int":               row["quantity"],
+        "added_at:datetime":          row["added_at"],
+        ":TYPE":                      "HAS_IN_CART"
     },
     "user_viewed": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
+        "user_id:START_ID(User)":     row["user_id"],
         "product_id:END_ID(Product)": row["product_id"],
-        "viewed_at:datetime": row["viewed_at"],
-        ":TYPE": "VIEWED"
+        "viewed_at:datetime":         row["viewed_at"],
+        ":TYPE":                      "VIEWED"
     },
     "user_purchased": lambda row: {
-        "user_id:START_ID(User)": row["user_id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        "purchased_at:datetime": row["purchased_at"],
-        ":TYPE": "PURCHASED"
-    }
+        "user_id:START_ID(User)":       row["user_id"],
+        "product_id:END_ID(Product)":   row["product_id"],
+        "purchased_at:datetime":        row["purchased_at"],
+        ":TYPE":                        "PURCHASED"
+    },
 }
 
+# === Aus welcher Tabelle je Relationship speisen ===
 RELATION_TABLE_SOURCES = {
-    "user_address": "addresses",
-    "user_order": "orders",
-    "order_payment": "payments",
+    "user_address":   "addresses",
+    "user_order":     "orders",
+    "order_payment":  "payments",
     "order_shipment": "shipments",
-    "user_wishlist": "wishlists",
+    "user_wishlist":  "wishlists",
     "order_contains": "order_items",
-    "user_reviewed": "reviews",
-    "user_cart": "cart_items",
-    "user_viewed": "product_views",
-    "user_purchased": "product_purchases"
+    "user_reviewed":  "reviews",
+    "user_cart":      "cart_items",
+    "user_viewed":    "product_views",
+    "user_purchased": "product_purchases",
 }
 
 
@@ -127,7 +180,7 @@ def stop_neo4j_container():
 
 def start_neo4j_container():
     print("🚀 Starte Neo4j-Container neu ...")
-    data_volume_path = str(Path("neo4j_data").resolve())
+    data_volume_path = str((Path(__file__).resolve().parent / "neo4j_data").resolve())
     subprocess.run([
         "docker", "run", "-d", "--rm",
         "--name", CONTAINER_NAME,
@@ -136,7 +189,7 @@ def start_neo4j_container():
         "-v", f"{data_volume_path}:/data",
         IMAGE_NAME
     ], check=True)
-    time.sleep(10)
+    wait_for_bolt()
     print("✅ Container läuft.")
 
 def fix_cypher_props(text):
@@ -192,10 +245,24 @@ def convert_json_to_csv_refactored(json_file: Path, out_dir: Path):
 
     return sorted(list(out_dir.glob("*.csv")))
 
+def wait_for_bolt(uri="bolt://127.0.0.1:7687", auth=("neo4j","superpassword55"),
+                  timeout=120, delay=2):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            with GraphDatabase.driver(uri, auth=auth) as drv:
+                with drv.session() as s:
+                    s.run("RETURN 1").consume()
+            print("✅ Neo4j ist bereit.")
+            return
+        except ServiceUnavailable:
+            time.sleep(delay)
+    raise RuntimeError("❌ Neo4j kam nicht hoch – Timeout!")
+
 def run_neo4j_import():
     print("📦 Importiere CSV-Dateien in Neo4j (Docker) ...")
     host_import_path = str(CSV_DIR.resolve())
-    data_volume_path = str(Path("neo4j_data").resolve())
+    data_volume_path = str((Path(__file__).resolve().parent / "neo4j_data").resolve())
 
     cmd = [
         "docker", "run", "--rm", "--user", "7474:7474",
@@ -244,7 +311,7 @@ def cleanup():
     shutil.rmtree(CSV_DIR)
 
 def reset_database_directory():
-    db_path = Path("neo4j_data")
+    db_path = Path(__file__).resolve().parent / "neo4j_data"
     if db_path.exists() and db_path.is_dir():
         print("🧨 Entferne bestehenden Neo4j-Datenbank-Ordner ...")
         shutil.rmtree(db_path)

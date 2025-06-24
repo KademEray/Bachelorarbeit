@@ -1,10 +1,61 @@
-import argparse
+import argparse, json
+import psycopg2
+from psycopg2 import sql
 import json
 import psycopg2
 from pathlib import Path
 from tqdm import tqdm
+from typing import List
 
-def insert_data_to_normal_postgres(file_id: int, json_dir: str = "../output"):
+BATCH_SIZE = 10_000
+
+def fix_sequences(conn):
+    seq_map = {
+        'users_id_seq'              : 'users',
+        'addresses_id_seq'          : 'addresses',
+        'products_id_seq'           : 'products',
+        'categories_id_seq'         : 'categories',
+        'orders_id_seq'             : 'orders',
+        'order_items_id_seq'        : 'order_items',
+        'payments_id_seq'           : 'payments',
+        'reviews_id_seq'            : 'reviews',
+        'cart_items_id_seq'         : 'cart_items',
+        'shipments_id_seq'          : 'shipments',
+        'product_views_id_seq'      : 'product_views',
+        'product_purchases_id_seq'  : 'product_purchases'
+    }
+
+    with conn.cursor() as cur:
+        for seq_name, table_name in seq_map.items():
+            print(f"🔁 Setze Sequence {seq_name} für Tabelle {table_name} …")
+            cur.execute(
+                sql.SQL("SELECT setval(%s, COALESCE((SELECT MAX(id) FROM {}), 0))")
+                    .format(sql.Identifier(table_name)),
+                [seq_name]
+            )
+    conn.commit()
+    print("✅ Alle Sequences wurden angepasst.")
+
+def insert_dynamic_with_executemany(cur, conn, table: str, rows: List[dict]):
+    if not rows:
+        return
+    keys        = rows[0].keys()
+    columns     = ", ".join(keys)
+    placeholders= ", ".join(["%s"] * len(keys))
+    query       = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+
+    batch = []
+    for row in tqdm(rows, desc=f"  ↳ {table}", unit="rows", ncols=80):
+        batch.append(tuple(row[k] for k in keys))
+        if len(batch) >= BATCH_SIZE:
+            cur.executemany(query, batch)
+            conn.commit()
+            batch.clear()
+    if batch:
+        cur.executemany(query, batch)
+        conn.commit()
+
+def insert_data_to_optimized_postgres(file_id: int, json_dir: str = "../output"):
     print(f"\n📁 Lade Datei: users_{file_id}.json aus {json_dir}/ ...")
     json_path = Path(json_dir) / f"users_{file_id}.json"
     if not json_path.exists():
@@ -71,14 +122,9 @@ def insert_data_to_normal_postgres(file_id: int, json_dir: str = "../output"):
         placeholders = ", ".join(["%s"] * len(keys))
         query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
 
-        for row in tqdm(rows, desc=f"  ↳ {table}", unit="rows", ncols=80):
-            values = tuple(row[key] for key in keys)
-            try:
-                cur.execute(query, values)
-            except Exception as e:
-                print(f"\n❌ Fehler beim Einfügen in '{table}': {e}\nWerte: {values}\n")
+        insert_dynamic_with_executemany(cur, conn, table, rows)
 
-    conn.commit()
+    fix_sequences(conn)
     cur.close()
     conn.close()
     print(f"\n✅ Alle Daten aus Datei 'users_{file_id}.json' wurden erfolgreich eingefügt.")
@@ -89,4 +135,4 @@ if __name__ == "__main__":
     parser.add_argument("--json-dir", type=str, default="../output", help="Ordnerpfad zur JSON-Datei")
     args = parser.parse_args()
 
-    insert_data_to_normal_postgres(args.file_id, args.json_dir)
+    insert_data_to_optimized_postgres(args.file_id, args.json_dir)
