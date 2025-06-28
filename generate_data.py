@@ -16,6 +16,8 @@ faker = Faker("de_DE")
 used_emails: set[str] = set()
 wishlist_pairs: set[tuple[int,int]] = set()
 
+
+# Hilfsfunktion für Zufallsdatum im aktuellen Jahr
 def random_date_this_year():
     now = datetime.now()
     start_of_year = datetime(now.year, 1, 1)
@@ -24,6 +26,7 @@ def random_date_this_year():
     return (start_of_year + timedelta(seconds=offset)).isoformat(timespec="seconds")
 
 
+# Generiert ein zufälliges Datum zwischen zwei Zeitpunkten
 def random_date_between(start: str, end: str) -> str:
     start_dt = datetime.fromisoformat(start)
     end_dt = datetime.now() if isinstance(end, str) and end == "now" else datetime.fromisoformat(end)
@@ -32,6 +35,7 @@ def random_date_between(start: str, end: str) -> str:
     return (start_dt + offset).isoformat(timespec="seconds")
 
 
+# Öffnet eine Sammlung von JSONL-Dateien zum Schreiben, je Tabelle eine
 def open_stream_files(base_dir: Path, tables: list[str]):
     files = {}
     for name in tables:
@@ -40,20 +44,26 @@ def open_stream_files(base_dir: Path, tables: list[str]):
     return files
 
 
+# Schließt alle geöffneten Stream-Dateien
 def close_stream_files(files: dict):
     for f in files.values():
         f.close()
 
 
+# Schreibt ein JSON-Objekt zeilenweise in eine Datei (JSONL-Format)
 def stream_write(file, obj):
     file.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
+# Hauptfunktion zur Generierung eines vollständigen Nutzungsdatensatzes
 def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir: Path | str = "output_streamed", final_dir: Path | str = "output") -> None:
+    # Vorbereitung der Verzeichnisse
     data_dir  = Path(data_dir)
     out_dir   = Path(out_dir)
     final_dir = Path(final_dir)
     out_dir.mkdir(exist_ok=True)
+    
+    # Öffne Stream-Dateien für alle benötigten Tabellen
     stream_files = open_stream_files(out_dir, [
         "users", "addresses",
         "orders", "order_items", "payments", "shipments",
@@ -61,19 +71,18 @@ def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir
         "product_views", "product_purchases"
     ])
 
-
+    # Lade Produktdaten aus CSV und berechne Bewertungs-Gewicht
     df = pd.read_csv(
         data_dir / "product_dataset.csv",
         usecols=["title", "price", "categoryName", "reviews"],
         encoding="utf-8",
         converters={"reviews": lambda x: int(str(x).replace(",", "").strip()) if x else 0}
     ).dropna()
-
     max_reviews = df["reviews"].max()
     df["review_weight"] = df["reviews"].apply(lambda r: 0.05 + 0.85 * (r / max_reviews if max_reviews else 0))
-    
-    products_raw = df.reset_index(drop=True)
 
+    # Produkte extrahieren und Gewichte zuweisen
+    products_raw = df.reset_index(drop=True)
     cat_name_to_id, categories = {}, []
     def get_cat_id(name: str) -> int:
         name = name.strip()
@@ -96,24 +105,24 @@ def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir
         prod_weights[pid] = float(products_raw.loc[idx, "review_weight"])
         pid += 1
 
-
-    # ID-Counter initialisieren
+    # ID-Zähler für alle Tabellen initialisieren
     addr_id = order_id = item_id = pay_id = ship_id = rev_id = cart_id = view_id = pur_id = 1
 
+    # Hilfsfunktion zur Generierung eindeutiger E-Mails
     def unique_email() -> str:
-        """Erzeuge garantiert noch nicht verwendete Faker-E-Mail."""
         email = faker.email()
         while email in used_emails:
             email = faker.email()
         used_emails.add(email)
         return email
 
+    # Nutzer + abhängige Entitäten generieren
     for uid in tqdm(range(1, num_users + 1), desc="Generiere Nutzer"):
+        # Nutzer und Adressen
         stream_write(stream_files["users"], {
             "id": uid, "name": faker.name(), "email": unique_email(),
             "created_at": random_date_this_year()
         })
-
         num_addr = random.choices([1, 2, 3], weights=[0.7, 0.25, 0.05])[0]
         primary_set = False
         for i in range(num_addr):
@@ -126,29 +135,26 @@ def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir
             addr_id += 1
             primary_set = True
 
+        # Bestellungen + Items + Reviews
         for _ in range(random.randint(1, 3)):
             created_ts = random_date_this_year()
-            delta_weeks = random.randint(1, 3)
-            updated_dt = datetime.fromisoformat(created_ts) + timedelta(weeks=delta_weeks)
-            updated_ts = updated_dt.isoformat(timespec="seconds")
+            updated_ts = (datetime.fromisoformat(created_ts) + timedelta(weeks=random.randint(1, 3))).isoformat(timespec="seconds")
             status = random.choice(ORDER_STATI)
             items = random.sample(products, k=random.randint(1, 4))
             total = 0.0
             for prod in items:
                 qty = random.randint(1, 3)
                 stream_write(stream_files["order_items"], {
-                    "id": item_id,
-                    "order_id": order_id, "product_id": prod["id"],
+                    "id": item_id, "order_id": order_id, "product_id": prod["id"],
                     "quantity": qty, "price": prod["price"]
                 })
                 item_id += 1
                 stream_write(stream_files["product_purchases"], {
-                    "id": pur_id,
-                    "user_id": uid, "product_id": prod["id"], "purchased_at": created_ts
+                    "id": pur_id, "user_id": uid, "product_id": prod["id"],
+                    "purchased_at": created_ts
                 })
                 stream_write(stream_files["product_views"], {
-                    "id": view_id,
-                    "user_id": uid, "product_id": prod["id"],
+                    "id": view_id, "user_id": uid, "product_id": prod["id"],
                     "viewed_at": (datetime.fromisoformat(created_ts) - timedelta(minutes=random.randint(1, 10))).isoformat(timespec="seconds")
                 })
                 view_id += 1
@@ -156,8 +162,7 @@ def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir
                 total += qty * prod["price"]
                 if random.random() < prod_weights[prod["id"]]:
                     stream_write(stream_files["reviews"], {
-                        "id": rev_id,
-                        "user_id": uid, "product_id": prod["id"],
+                        "id": rev_id, "user_id": uid, "product_id": prod["id"],
                         "rating": random.randint(1, 5), "comment": None,
                         "created_at": created_ts
                     })
@@ -167,24 +172,20 @@ def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir
                 "id": order_id, "user_id": uid, "status": status,
                 "total": round(total, 2), "created_at": created_ts, "updated_at": updated_ts
             })
-            
-            payment_offset = timedelta(hours=random.randint(1, 48))
-            paid_at_dt = min(datetime.fromisoformat(created_ts) + payment_offset, datetime.now())
-            paid_at = paid_at_dt.isoformat(timespec="seconds")
 
+            paid_at = (datetime.fromisoformat(created_ts) + timedelta(hours=random.randint(1, 48)))
             stream_write(stream_files["payments"], {
                 "id": pay_id, "order_id": order_id,
                 "payment_method": random.choice(PAY_METHODS),
                 "payment_status": "paid" if status != "CANCELLED" else "failed",
-                "paid_at": None if status == "CANCELLED" else paid_at
+                "paid_at": None if status == "CANCELLED" else paid_at.isoformat(timespec="seconds")
             })
             pay_id += 1
 
             if status in {"SHIPPED", "COMPLETED"}:
                 ship_ts = random_date_between(created_ts, "now")
                 stream_write(stream_files["shipments"], {
-                    "id": ship_id,
-                    "order_id": order_id,
+                    "id": ship_id, "order_id": order_id,
                     "tracking_number": faker.bothify("??########"),
                     "shipped_at": ship_ts,
                     "delivered_at": random_date_between(ship_ts, "now"),
@@ -194,64 +195,60 @@ def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir
 
             order_id += 1
 
+        # Einkaufswagen
         for prod in random.sample(products, k=random.randint(0, 3)):
             stream_write(stream_files["cart_items"], {
-                "id": cart_id,
-                "user_id": uid, "product_id": prod["id"],
+                "id": cart_id, "user_id": uid, "product_id": prod["id"],
                 "quantity": random.randint(1, 2),
                 "added_at": random_date_this_year()
             })
             cart_id += 1
 
+        # Wunschlisten ohne Duplikate
         max_wishes = random.randint(1, 5)
-        attempts   = 0
-        wishes     = 0                       # ← neuer Zähler
-
+        attempts, wishes = 0, 0
         while wishes < max_wishes and attempts < 3 * max_wishes:
             prod = random.choice(products)
-            key  = (uid, prod["id"])
+            key = (uid, prod["id"])
             attempts += 1
             if key in wishlist_pairs:
-                continue                     # Duplikat – neuer Versuch
+                continue
             wishlist_pairs.add(key)
-            wishes += 1                      # ← gezielt hochzählen
-
+            wishes += 1
             stream_write(stream_files["wishlists"], {
-                "user_id":   uid,
-                "product_id": prod["id"],
+                "user_id": uid, "product_id": prod["id"],
                 "created_at": random_date_this_year()
             })
 
+        # Zusätzliche Produktansichten simulieren
         for _ in range(random.randint(1, 10)):
             prod = random.choice(products)
             stream_write(stream_files["product_views"], {
-                "id": view_id,
-                "user_id": uid, "product_id": prod["id"],
+                "id": view_id, "user_id": uid, "product_id": prod["id"],
                 "viewed_at": random_date_this_year()
             })
             view_id += 1
 
-    # 📌 Sicherstellen, dass mindestens 1 Review existiert
+    # Falls keine Bewertungen generiert wurden, Dummy-Eintrag erzeugen
     reviews_path = out_dir / "reviews.jsonl"
     if reviews_path.stat().st_size == 0:
         print("⚠️ Keine Reviews generiert – erzeuge 1 Dummy-Review")
         random_uid = random.randint(1, num_users)
         random_prod = random.choice(products)
         stream_write(stream_files["reviews"], {
-            "id": rev_id,
-            "user_id": random_uid,
-            "product_id": random_prod["id"],
-            "rating": random.randint(1, 5),
-            "comment": None,
-            "created_at": random_date_this_year()
+            "id": rev_id, "user_id": random_uid,
+            "product_id": random_prod["id"], "rating": random.randint(1, 5),
+            "comment": None, "created_at": random_date_this_year()
         })
 
+    # Streams schließen und JSON-Dateien zusammenfügen
     close_stream_files(stream_files)
     print(f"\n✓ Streaming-Datensatz gespeichert unter: {out_dir.resolve()}")
     print(f"Dateien Zusammensetzen...")
     merge_jsonl_to_single_file(out_dir, final_dir, num_users)
 
 
+# Funktion zum Einrücken/Schönformatieren einer JSON-Datei
 def beautify_json_file(file_path: Path):
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -259,6 +256,7 @@ def beautify_json_file(file_path: Path):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+# Funktion zum Zusammenführen mehrerer .jsonl-Dateien in eine strukturierte JSON-Datei
 def merge_jsonl_to_single_file(stream_dir: Path, final_dir: Path, num_users: int):
     tables = [
         "users", "addresses",
@@ -267,10 +265,10 @@ def merge_jsonl_to_single_file(stream_dir: Path, final_dir: Path, num_users: int
         "product_views", "product_purchases"
     ]
 
-
     final_dir.mkdir(parents=True, exist_ok=True)
     final_file = final_dir / f"users_{num_users}.json"
 
+    # Zusammenführen aller Tabellen aus .jsonl-Dateien in ein großes JSON-Objekt
     with open(final_file, "w", encoding="utf-8") as out:
         out.write("{\n")
         for i, table in enumerate(tables):
@@ -289,17 +287,18 @@ def merge_jsonl_to_single_file(stream_dir: Path, final_dir: Path, num_users: int
 
     print(f"\n✓ Zusammengeführte Datei gespeichert unter: {final_file.resolve()}")
 
-    # Stream-Verzeichnis löschen
+    # Optional: temporäres Stream-Verzeichnis entfernen
     try:
         shutil.rmtree(stream_dir)
         print(f"✓ Stream-Ordner gelöscht: {stream_dir}")
     except Exception as e:
         print(f"⚠ Fehler beim Löschen von {stream_dir}: {e}")
     
+    # Formatierung verbessern
     beautify_json_file(final_file)
 
 
-# CLI
+# CLI-Interface zur Nutzung via Kommandozeile
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--users", type=int, required=True, help="Anzahl User (z. B. 1000)")

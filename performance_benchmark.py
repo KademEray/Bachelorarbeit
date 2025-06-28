@@ -1,16 +1,17 @@
-"""performance_benchmark.py
+"""
+performance_benchmark.py
 ============================================================
-Vergleicht vier Docker‑Datenbanken (PostgreSQL & Neo4j) anhand
-12 Queries x 4 Laststufen (1 / 3 / 5 / 10 parallele Aufrufe).
+Dieses Skript führt systematische Benchmarks auf vier Datenbankvarianten durch (PostgreSQL/Neo4j jeweils normal & optimiert).
+Dabei werden 24 Abfragen auf 4 parallelen Laststufen (1, 3, 5, 10 Threads) getestet.
 
-Erfasst pro Durchlauf:
-* Dauer (ms) - Gesamtzeit bis **alle** parallelen Aufrufe fertig sind
-* CPU-Last des Containers (%),
-* RAM-Belegung (MB)
-* belegter Plattenspeicher (MB, SizeRootFs),
-* Komplexitätsstufe der Query.
+Pro Benchmarklauf werden folgende Kennzahlen erfasst:
+* Dauer in Millisekunden (Gesamtzeit aller parallelen Threads)
+* CPU-Last des Docker-Containers in Prozent
+* RAM-Verbrauch in Megabyte
+* belegter Plattenspeicher in Megabyte (SizeRootFs)
+* Komplexität der Query (einfache bis komplexe Abfragen)
 
-Speichert alles in eine CSV-Datei <variant>_results.csv.
+Die Ergebnisse werden in eine CSV-Datei <variant>_results.csv geschrieben.
 """
 
 from __future__ import annotations
@@ -32,18 +33,20 @@ import os
 import logging
 import multiprocessing, pathlib
 
+# Pfad zur cgroup v2 (für Ressourcenmessung bei Docker-Containern)
+CG_PATH = pathlib.Path("/sys/fs/cgroup")
 
-CG_PATH = pathlib.Path("/sys/fs/cgroup")        # cgroup v2 angenommen
+# Anzahl der verfügbaren CPU-Kerne (für Normalisierung der CPU-Last)
 CPU_CORES = multiprocessing.cpu_count()
 
-# ───── Logging-Setup ─────
+# ───── Logging-Konfiguration ─────
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(2023)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("logs/benchmark.log", encoding="utf-8"),
-        logging.StreamHandler()
+        logging.FileHandler("logs/benchmark.log", encoding="utf-8"),  # Protokollierung in Datei
+        logging.StreamHandler()  # Zusätzlich Ausgabe auf Konsole
     ]
 )
 logger = logging.getLogger(__name__)
@@ -60,15 +63,17 @@ def _clk_tck_for_container(cid: str) -> int:
         return _CLK_TCK_CACHE[cid]
 
     try:
+        # Versucht, den CLK_TCK-Wert direkt im Container abzufragen
         out = subprocess.check_output(
             ["docker", "exec", cid, "getconf", "CLK_TCK"],
             text=True, stderr=subprocess.DEVNULL
         ).strip()
         val = int(out)
     except Exception:
-        val = 100          # praktisch alle x86-64-Kerne
+        val = 100          # Standardwert für x86-64-Systeme
     _CLK_TCK_CACHE[cid] = val
     return val
+
 
 def _read_iowait_jiffies(cid: str) -> int:
     """
@@ -76,6 +81,7 @@ def _read_iowait_jiffies(cid: str) -> int:
     Das funktioniert auch unter Docker Desktop auf Windows/Mac.
     """
     try:
+        # /proc/stat wird über docker exec gelesen, um auf Containerwerte zuzugreifen
         txt = subprocess.check_output(
             ["docker", "exec", cid, "cat", "/proc/stat"],
             text=True, stderr=subprocess.DEVNULL
@@ -88,6 +94,7 @@ def _read_iowait_jiffies(cid: str) -> int:
         print(f"[warn] iowait konnte nicht gelesen werden: {e}")
         return 0
 
+
 def _read_cgroup_stats(cid: str) -> dict[str, int]:
     """
     Liefert kumulative CPU-, Block-I/O-, Netz-I/O- und Speicher-Statistiken
@@ -95,7 +102,7 @@ def _read_cgroup_stats(cid: str) -> dict[str, int]:
     zurück.
     """
     cdir = CG_PATH / cid
-    use_exec = not cdir.exists()
+    use_exec = not cdir.exists()  # Fallback bei fehlendem Zugriff auf cgroup v2
 
     # ---------- Dateien lesen ----------
     def _cat_inside(path: str) -> str:
@@ -128,12 +135,11 @@ def _read_cgroup_stats(cid: str) -> dict[str, int]:
                     total += int(v)
         return total
 
-    rbytes = _sum_io("rbytes")
-    wbytes = _sum_io("wbytes")
+    rbytes = _sum_io("rbytes")  # Lesezugriffe in Byte
+    wbytes = _sum_io("wbytes")  # Schreibzugriffe in Byte
 
     # ---------- Network-I/O ----------
-    # Wir lesen innerhalb des Containers das *erste* "eth*"-Interface.
-    # (Bei Docker ist das üblicherweise eth0.)
+    # Standard-Netzwerkinterface "eth0" auslesen
     net_rx = net_tx = 0
     try:
         iface = "eth0"
@@ -145,7 +151,7 @@ def _read_cgroup_stats(cid: str) -> dict[str, int]:
             net_rx = int(Path(base, "rx_bytes").read_text().strip())
             net_tx = int(Path(base, "tx_bytes").read_text().strip())
     except Exception:
-        # Fallback – z. B. wenn Interface anders heißt
+        # Fallback – z. B. wenn Interface anders heißt oder nicht vorhanden ist
         pass
 
     # ---------- Memory ----------
@@ -162,6 +168,7 @@ def _read_cgroup_stats(cid: str) -> dict[str, int]:
 
 
 def _delta(before: dict, after: dict) -> dict:
+    # Berechnet Differenzen zwischen zwei Messpunkten
     return {k: after[k] - before[k] for k in before}
 
 
@@ -192,13 +199,13 @@ def get_docker_disk_mb(container: str) -> float:
 ###############################################################################
 
 class Complexity(Enum):
-    SIMPLE = "simple"
-    MEDIUM = "medium"
-    COMPLEX = "complex"
-    VERY_COMPLEX = "very_complex"
-    CREATE = "create"
-    UPDATE = "update"
-    DELETE = "delete"
+    SIMPLE = "simple"               # Einfache Abfrage, geringe Last und geringe Ausführungskomplexität
+    MEDIUM = "medium"               # Mittlere Abfrage mit leicht erhöhter Last oder Verknüpfung
+    COMPLEX = "complex"             # Komplexere Abfrage mit mehreren Joins oder Bedingungen
+    VERY_COMPLEX = "very_complex"   # Sehr aufwändige Abfrage, z. B. mit Aggregationen, Subqueries oder mehreren Joins
+    CREATE = "create"               # Schreiboperation: Einfügen neuer Daten
+    UPDATE = "update"               # Schreiboperation: Aktualisieren bestehender Daten
+    DELETE = "delete"               # Schreiboperation: Löschen von Daten
 
 
 # ==========================================================
@@ -208,14 +215,19 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
 
     # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
+        # Gibt eine große Menge an Produktdaten zurück – Test für reine Leselast auf einer Einzel-Tabelle mit ORDER BY
         "SELECT id, name, price, stock, created_at, updated_at FROM products ORDER BY id LIMIT 10000;",
+
+        # Abruf aller Kategorienamen – kleinerer Umfang, geringer Aufwand
         "SELECT id, name FROM categories ORDER BY id LIMIT 1000;",
+
+        # Abfrage auf Adressen mit kleiner Ergebnisgröße – Basis-Leseoperation
         "SELECT * FROM addresses ORDER BY id LIMIT 25;",
     ],
 
     # ───────── MEDIUM ─────────
     Complexity.MEDIUM: [
-        # Produkte mit mindestens einer Kategorie
+        # Liefert alle Produkte, die mindestens einer Kategorie zugeordnet sind (Existenzprüfung über Subquery)
         """
         SELECT p.id, p.name, p.price, p.stock, p.created_at, p.updated_at
           FROM products p
@@ -226,7 +238,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
          LIMIT 100;
         """,
 
-        # 20 Positionen aus den zuletzt angelegten Bestellungen
+        # Holt Artikel aus den zuletzt erstellten Bestellungen (JOINs über drei Tabellen, sortiert nach Zeit)
         """
         SELECT p.id,
                p.name,
@@ -242,7 +254,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
          LIMIT 20;
         """,
 
-        # fünf neueste Reviews (beliebige Produkte)
+        # Gibt die fünf neuesten Bewertungen zurück – moderate Datenmenge mit ORDER BY auf Datum
         """
         SELECT id,
                user_id,
@@ -257,7 +269,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
 
     # ───────── COMPLEX ─────────
     Complexity.COMPLEX: [
-        # Bestellsummen pro Bestellung
+        # Berechnet die Gesamtsumme jeder Bestellung über Menge × Preis – Gruppierung erforderlich
         """
         SELECT o.id,
                o.created_at,
@@ -269,7 +281,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
          LIMIT 50;
         """,
 
-        # Produkte mit Ø-Rating > 4
+        # Ermittelt Produkte mit einem durchschnittlichen Rating über 4 – Aggregation mit HAVING
         """
         SELECT p.id,
                p.name,
@@ -281,7 +293,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
          ORDER BY avg_rating DESC, p.id LIMIT 200;
         """,
 
-        # Bestellungen der letzten 30 Tage pro User (>0)
+        # Gibt Anzahl der Bestellungen in den letzten 30 Tagen pro User zurück, sofern mind. 1 Bestellung vorhanden ist
         """
         SELECT u.id,
                COUNT(*) AS orders_last_30d
@@ -297,7 +309,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
 
     # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
-        # Cross-Sell: meistgekauftes Produkt & zugehörige Empfehlungen
+        # Cross-Selling-Analyse: ermittelt Produkte, die von Käufern des Top-Sellers ebenfalls häufig gekauft wurden
         """
         WITH top_prod AS (
                 SELECT product_id
@@ -323,7 +335,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
          LIMIT 20;
         """,
 
-        # Produkte, die ein User sowohl angesehen als auch gekauft hat
+        # Kombinierte Filterung: Nur Produkte, die ein Nutzer sowohl angesehen als auch tatsächlich gekauft hat
         """
         SELECT DISTINCT p.id,
                         p.name
@@ -336,7 +348,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
          LIMIT 25;
         """,
 
-        # Zwei-Hop-Netz rund um dasselbe Top-Produkt
+        # Zwei-Hop-Empfehlung: Welche Produkte kaufen Nutzer, die bereits den Top-Seller gekauft haben – zielt auf Relevanznetzwerk
         """
         WITH top_prod AS (
                 SELECT product_id
@@ -363,9 +375,9 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         """,
     ],
 
-    # ───────── CREATE ─────────
+        # ───────── CREATE ─────────
     Complexity.CREATE: [
-        # neue Adresse
+        # Fügt eine neue Adresse ein – verwendet einen beliebigen User (LIMIT 1) und generiert zufällige Straße
         """
         INSERT INTO addresses (user_id, street, city, zip, country, is_primary)
         VALUES (
@@ -379,7 +391,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS address_id;
         """,
 
-        # neue Bestellung
+        # Legt eine neue Bestellung mit Status 'pending' und Betrag 0.0 an – Zeitstempel ist aktuelle Uhrzeit
         """
         INSERT INTO orders (user_id, status, total, created_at)
         VALUES (
@@ -391,7 +403,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS order_id;
         """,
 
-        # Cart-Item
+        # Fügt einen neuen Warenkorb-Eintrag für ein Produkt ein – testweise mit Menge 2
         """
         INSERT INTO cart_items (user_id, product_id, quantity, added_at)
         VALUES (
@@ -403,7 +415,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS cart_item_id;
         """,
 
-        # Produkt-View
+        # Erfasst eine Produktansicht mit aktuellem Zeitstempel – simuliert View-Event
         """
         INSERT INTO product_views (user_id, product_id, viewed_at)
         VALUES (
@@ -417,6 +429,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
 
     # ───────── UPDATE ─────────
     Complexity.UPDATE: [
+        # Erhöht den Lagerbestand eines Produkts um 1 – simuliert z. B. Rücklieferung oder Korrektur
         """
         UPDATE products
         SET stock = stock + 1
@@ -424,6 +437,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS product_id, stock AS new_stock;
         """,
 
+        # Verringert die Bewertung eines Reviews, aber nicht unter 1 – vermeidet ungültige Werte
         """
         UPDATE reviews
         SET rating = GREATEST(rating - 1, 1)
@@ -431,6 +445,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS review_id, rating AS new_rating;
         """,
 
+        # Erhöht die Menge eines Warenkorbeintrags – simuliert erneutes Hinzufügen desselben Produkts
         """
         UPDATE cart_items
         SET quantity = quantity + 3
@@ -438,6 +453,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS cart_item_id, quantity AS new_quantity;
         """,
 
+        # Modifiziert die E-Mail eines Nutzers testweise – dient als Dummy-Update
         """
         UPDATE users
         SET email = email || '.tmp'
@@ -448,6 +464,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
 
     # ───────── DELETE ─────────
     Complexity.DELETE: [
+        # Löscht eine Adresse – der zu löschende Eintrag wird zuvor per CTE ausgewählt
         """
         WITH victim AS (
             SELECT id
@@ -461,7 +478,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING a.id AS deleted_address_id;
         """,
 
-        # 2) Review löschen
+        # Löscht ein Review – ebenfalls über CTE ausgewählt, um das Ziel isoliert zu bestimmen
         """
         WITH victim AS (
             SELECT id
@@ -475,7 +492,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING r.id AS deleted_review_id;
         """,
 
-        # 3) Cart-Item löschen
+        # Entfernt einen Warenkorbeintrag – einfache CTE-Löschung mit Rückgabe
         """
         WITH victim AS (
             SELECT id
@@ -489,7 +506,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING c.id AS deleted_cart_item_id;
         """,
 
-        # 4) Product-Purchase löschen
+        # Löscht einen Produkteinkauf – Verwendung analog zu den vorherigen CTEs
         """
         WITH victim AS (
             SELECT id
@@ -505,7 +522,6 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
     ],
 }
 
-
 PG_OPT_QUERIES = PG_NORMAL_QUERIES   # gleiche SQL-Syntax
 
 
@@ -519,6 +535,7 @@ NEO_NORMAL_QUERIES = {
 
     # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
+        # Ruft bis zu 10.000 Produktknoten mit Basisattributen ab – sortiert nach ID
         """
         MATCH (p:Product)
         RETURN p.id         AS id,
@@ -531,6 +548,7 @@ NEO_NORMAL_QUERIES = {
         LIMIT 10000;
         """,
 
+        # Liest maximal 1.000 Kategorien aus – Rückgabe von ID und Name
         """
         MATCH (c:Category)
         RETURN c.id   AS id,
@@ -539,6 +557,7 @@ NEO_NORMAL_QUERIES = {
         LIMIT 1000;
         """,
 
+        # Gibt 25 Adressen mit vollständigem Attributsatz zurück – sortiert nach ID
         """
         MATCH (a:Address)
         RETURN a.id         AS id,
@@ -555,7 +574,7 @@ NEO_NORMAL_QUERIES = {
 
     # ───────── MEDIUM ─────────
     Complexity.MEDIUM: [
-        # Produkte mit mindestens einer Kategorie
+        # Produkte, die mindestens einer Kategorie zugeordnet sind – Duplikate entfernt
         """
         MATCH (p:Product)-[:BELONGS_TO]->(:Category)
         WITH DISTINCT p
@@ -569,7 +588,7 @@ NEO_NORMAL_QUERIES = {
         LIMIT 100;
         """,
 
-        # letzte 20 Bestellungen + Positionen
+        # Ermittelt die letzten 20 Bestellungen und zugehörige Produkte – inkl. Menge
         """
         MATCH (o:Order)
         WITH o ORDER BY o.created_at DESC, o.id DESC LIMIT 20
@@ -586,7 +605,7 @@ NEO_NORMAL_QUERIES = {
         LIMIT 20;
         """,
 
-        # fünf neueste Reviews (Knoten)
+        # Liefert die 5 neuesten Reviews – nach Erstellungsdatum und ID sortiert
         """
         MATCH (r:Review)
         RETURN r.id         AS id,
@@ -599,9 +618,9 @@ NEO_NORMAL_QUERIES = {
         """,
     ],
 
-    # ───────── COMPLEX ─────────
+        # ───────── COMPLEX ─────────
     Complexity.COMPLEX: [
-        # Bestellsummen pro Order
+        # Aggregiert Bestellsummen pro Order (Menge × Preis je Position)
         """
         MATCH (o:Order)-[:HAS_ITEM]->(oi:OrderItem)
         WITH o, SUM(oi.quantity * oi.price) AS total
@@ -612,7 +631,7 @@ NEO_NORMAL_QUERIES = {
         LIMIT 50;
         """,
 
-        # Produkte mit Ø-Rating > 4
+        # Produkte mit durchschnittlicher Bewertung > 4 (nach Bewertung absteigend)
         """
         MATCH (p:Product)<-[:REVIEWS]-(r:Review)
         WITH p, AVG(r.rating) AS avg_rating
@@ -624,7 +643,7 @@ NEO_NORMAL_QUERIES = {
         LIMIT 200;
         """,
 
-        # Bestellungen der letzten 30 Tage pro User
+        # Zählt Bestellungen der letzten 30 Tage pro Nutzer (nur Nutzer mit ≥1 Bestellung)
         """
         MATCH (u:User)-[:PLACED]->(o:Order)
         WHERE datetime(o.created_at) >= datetime() - duration({days:30})
@@ -639,7 +658,7 @@ NEO_NORMAL_QUERIES = {
 
     # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
-        # Cross-Sell basierend auf meistverkauftem Produkt
+        # Cross-Selling: meistverkauftes Produkt → Empfehlungen basierend auf Käufen derselben Nutzer
         """
         MATCH (:Order)-[:HAS_ITEM]->(oi1:OrderItem)
         WITH oi1.product_id AS prod , COUNT(*) AS freq
@@ -655,7 +674,7 @@ NEO_NORMAL_QUERIES = {
         LIMIT 20;
         """,
 
-        # View ∩ Purchase
+        # Schnittmenge: Produkte, die ein Nutzer sowohl angesehen als auch gekauft hat
         """
         MATCH (u:User)-[:VIEWED]->(:ProductView)-[:VIEWED_PRODUCT]->(p:Product)
         MATCH (u)-[:PLACED]->(:Order)-[:HAS_ITEM]->(:OrderItem {product_id: p.id})
@@ -665,8 +684,7 @@ NEO_NORMAL_QUERIES = {
         LIMIT 25;
         """,
 
-
-        # Zwei-Hop-Netz um dasselbe Top-Produkt
+        # Zwei-Hop-Produktempfehlung auf Basis von Top-Produkt: andere Käufe derselben Käuferschaft
         """
         MATCH (:Order)-[:HAS_ITEM]->(oi:OrderItem)
         WITH oi.product_id AS prod , COUNT(*) AS freq
@@ -683,8 +701,9 @@ NEO_NORMAL_QUERIES = {
         """,
     ],
 
-    # ───────── CREATE ─────────
+        # ───────── CREATE ─────────
     Complexity.CREATE: [
+        # Neue Adresse für zufälligen User – ID inkrementell, Relation HAS_ADDRESS
         """
         OPTIONAL MATCH (a:Address)
         WITH coalesce(max(a.id),0)+1 AS new_id
@@ -700,6 +719,7 @@ NEO_NORMAL_QUERIES = {
         RETURN a.id AS address_id;
         """,
 
+        # Neue Bestellung für User – mit ID und Zeitstempel
         """
         OPTIONAL MATCH (o:Order)
         WITH coalesce(max(o.id),0)+1 AS new_id
@@ -713,6 +733,7 @@ NEO_NORMAL_QUERIES = {
         RETURN o.id AS order_id;
         """,
 
+        # Neues CartItem für Produkt und Nutzer – mit Referenzrelationen
         """
         OPTIONAL MATCH (ci:CartItem)
         WITH coalesce(max(ci.id),0)+1 AS new_id
@@ -730,6 +751,7 @@ NEO_NORMAL_QUERIES = {
         RETURN ci.id AS cart_item_id;
         """,
 
+        # Neuer Produkt-View durch Nutzer – inkl. VIEWED- und VIEWED_PRODUCT-Relation
         """
         OPTIONAL MATCH (pv:ProductView)
         WITH coalesce(max(pv.id),0)+1 AS new_id
@@ -749,7 +771,7 @@ NEO_NORMAL_QUERIES = {
 
     # ───────── UPDATE ─────────
     Complexity.UPDATE: [
-        # 1) Lagerbestand +1  → node-id + neuer Stock
+        # Lagerbestand erhöhen – erster Produkt-Knoten, neue Stock-Menge wird zurückgegeben
         """
         MATCH (p:Product)
         WITH p ORDER BY p.id LIMIT 1
@@ -758,7 +780,7 @@ NEO_NORMAL_QUERIES = {
         p.stock AS new_stock;
         """,
 
-        # 2) Rating −1 (min. 1)  → review_id + neues Rating
+        # Bewertung eines Reviews senken (min. 1) – neue Bewertung und ID zurückgeben
         """
         MATCH (r:Review) WITH r LIMIT 1
         SET   r.rating = CASE
@@ -770,7 +792,7 @@ NEO_NORMAL_QUERIES = {
             r.rating AS new_rating;
         """,
 
-        # 3) Cart-Menge +3  → cartItem-id + neue Quantity
+        # CartItem-Menge um +3 erhöhen – kleinstes CartItem wird verändert
         """
         MATCH (ci:CartItem)
         WITH ci ORDER BY ci.id       /* deterministisch: kleinste id */
@@ -780,7 +802,7 @@ NEO_NORMAL_QUERIES = {
             ci.quantity AS new_quantity;
         """,
 
-        # 4) E-Mail suffix  → user_id + neue Mail
+        # Email eines Users modifizieren – durch Suffix .tmp
         """
         MATCH (u:User) WITH u LIMIT 1
         SET   u.email = u.email + '.tmp'
@@ -791,7 +813,7 @@ NEO_NORMAL_QUERIES = {
 
     # ───────── DELETE ─────────
     Complexity.DELETE: [
-        # 1) Adresse löschen  → gelöschte id
+        # Erstes Address-Objekt samt Relationen löschen (deterministisch)
         """
         MATCH (a:Address)
         WITH a ORDER BY a.id ASC
@@ -801,7 +823,7 @@ NEO_NORMAL_QUERIES = {
         RETURN deleted_address_id;
         """,
 
-        # 2) Review-Knoten löschen
+        # Erstes Review-Objekt samt Verknüpfungen löschen
         """
         MATCH (r:Review)
         WITH r ORDER BY r.id ASC
@@ -811,7 +833,7 @@ NEO_NORMAL_QUERIES = {
         RETURN deleted_review_id;
         """,
 
-        # 3) Cart-Item-Knoten löschen
+        # Erstes CartItem löschen (inkl. Produktrelation)
         """
         MATCH (ci:CartItem)
         WITH ci ORDER BY ci.id ASC
@@ -821,7 +843,7 @@ NEO_NORMAL_QUERIES = {
         RETURN deleted_cart_item_id;
         """,
 
-        # 4) Product-Purchase-Relationship löschen
+        # Erstes ProductPurchase-Objekt löschen (inkl. evtl. zugehöriger Relationen)
         """
         MATCH (pp:ProductPurchase)
         WITH pp ORDER BY pp.id ASC
@@ -839,6 +861,7 @@ NEO_OPT_QUERIES = {
 
     # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
+        # Alle Produkte mit Basisattributen – bis zu 10.000 Einträge
         """
         MATCH (p:Product)
         RETURN p.id         AS id,
@@ -851,7 +874,7 @@ NEO_OPT_QUERIES = {
         LIMIT 10000;
         """,
 
-        # 2) Kategorien
+        # Alle Kategorien – alphabetisch sortiert nach ID
         """
         MATCH (c:Category)
         RETURN c.id   AS id,
@@ -860,7 +883,7 @@ NEO_OPT_QUERIES = {
         LIMIT 1000;
         """,
 
-        # 3) Adressen
+        # Adressen mit allen gespeicherten Feldern – maximal 25
         """
         MATCH (a:Address)
         RETURN a.id         AS id,
@@ -877,7 +900,7 @@ NEO_OPT_QUERIES = {
 
     # ───────── MEDIUM ─────────
     Complexity.MEDIUM: [
-        # Produkte mit ≥ 1 Kategorie
+        # Produkte, die mindestens einer Kategorie zugeordnet sind
         """
         MATCH (p:Product)-[:BELONGS_TO]->(:Category)
         WITH DISTINCT p
@@ -891,7 +914,7 @@ NEO_OPT_QUERIES = {
         LIMIT 100;
         """,
 
-        # 20 Positionen aus den letzten Bestellungen
+        # Produkte und Mengen aus den 20 neuesten Bestellungen – Relation CONTAINS
         """
         MATCH (o:Order)
         WITH o ORDER BY o.created_at DESC, o.id DESC LIMIT 20
@@ -907,7 +930,7 @@ NEO_OPT_QUERIES = {
         LIMIT 20;
         """,
 
-        # fünf neueste Reviews (Relationship-basiert)
+        # Neueste Reviews über REIEWED-Relationship – 5 Einträge mit Meta-Infos
         """
         MATCH (u:User)-[rev:REVIEWED]->(p:Product)
         RETURN rev.id        AS id,
@@ -919,10 +942,9 @@ NEO_OPT_QUERIES = {
         LIMIT 5;
         """,
     ],
-
     # ───────── COMPLEX ─────────
     Complexity.COMPLEX: [
-        # Bestellsummen pro Bestellung
+        # Aggregierte Bestellsummen pro Bestellung (basierend auf Preis * Menge)
         """
         MATCH (o:Order)-[oi:CONTAINS]->(p:Product)
         WITH o, SUM(toInteger(oi.quantity) * toFloat(oi.price)) AS total
@@ -933,7 +955,7 @@ NEO_OPT_QUERIES = {
         LIMIT 50;
         """,
 
-        # Produkte mit Ø-Rating > 4
+        # Produkte mit durchschnittlicher Bewertung über 4 (basierend auf REVIEWED-Relation)
         """
         MATCH (p:Product)<-[rev:REVIEWED]-()
         WITH p, AVG(toFloat(rev.rating)) AS avg_rating
@@ -945,7 +967,7 @@ NEO_OPT_QUERIES = {
         LIMIT 200;
         """,
 
-        # Bestellungen der letzten 30 Tage pro User
+        # Nutzer mit Bestellungen innerhalb der letzten 30 Tage (inkl. Zählung)
         """
         MATCH (u:User)-[:PLACED]->(o:Order)
         WHERE datetime(o.created_at) >= datetime() - duration({days:30})
@@ -959,7 +981,7 @@ NEO_OPT_QUERIES = {
 
     # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
-        # Cross-Sell (meistverkauftes Produkt → weitere Käufe)
+        # Cross-Selling: meistverkauftes Produkt → weitere Käufe durch gleiche Nutzer
         """
         MATCH (:Order)-[:CONTAINS]->(p1:Product)
         WITH p1, COUNT(*) AS freq
@@ -976,7 +998,7 @@ NEO_OPT_QUERIES = {
         LIMIT 20;
         """,
 
-        # View ∩ Purchase
+        # Produkte, die sowohl angesehen als auch gekauft wurden (Schnittmenge)
         """
         MATCH (u:User)-[:VIEWED]->(p:Product)
         MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p)
@@ -986,7 +1008,7 @@ NEO_OPT_QUERIES = {
         LIMIT 25;
         """,
 
-        # Zwei-Hop um Top-Produkt
+        # Zwei-Hop-Netz: Nutzer, die ein Top-Produkt gekauft haben + deren weitere Käufe
         """
         MATCH (:Order)-[:CONTAINS]->(tp:Product)
         WITH tp, COUNT(*) AS freq
@@ -1004,9 +1026,9 @@ NEO_OPT_QUERIES = {
         """,
     ],
 
-    # ───────── CREATE ─────────
+        # ───────── CREATE ─────────
     Complexity.CREATE: [
-        # 1) Adresse
+        # Erstellung einer neuen Adresse und Verknüpfung mit einem Nutzer (inkrementelle ID)
         """
         OPTIONAL MATCH (a:Address)
         WITH coalesce(max(a.id),0)+1 AS new_id
@@ -1022,7 +1044,7 @@ NEO_OPT_QUERIES = {
         RETURN a.id AS address_id;
         """,
 
-        # 2) Order
+        # Erstellung einer neuen Bestellung mit Default-Werten und Nutzerverknüpfung
         """
         OPTIONAL MATCH (o:Order)
         WITH coalesce(max(o.id),0)+1 AS new_id
@@ -1036,7 +1058,7 @@ NEO_OPT_QUERIES = {
         RETURN o.id AS order_id;
         """,
 
-        # 3) HAS_IN_CART-Relationship (mit eigener id)
+        # Erstellung einer neuen Warenkorb-Relation zwischen User und Produkt (inkl. Metadaten)
         """
         OPTIONAL MATCH ()-[c:HAS_IN_CART]-()
         WITH coalesce(max(c.id),0)+1 AS new_id
@@ -1050,7 +1072,7 @@ NEO_OPT_QUERIES = {
         RETURN c.id AS cart_rel_id;
         """,
 
-        # 4) VIEWED-Relationship (mit eigener id)
+        # Erstellung einer neuen Produkt-View-Relation zwischen Nutzer und Produkt
         """
         OPTIONAL MATCH ()-[v:VIEWED]-()
         WITH coalesce(max(v.id),0)+1 AS new_id
@@ -1066,7 +1088,7 @@ NEO_OPT_QUERIES = {
 
     # ───────── UPDATE ─────────
     Complexity.UPDATE: [
-        # 1) Stock +1
+        # Erhöhung des Lagerbestands um +1 bei erstem Produkt (deterministisch gewählt)
         """
         MATCH (p:Product) WITH p ORDER BY p.id LIMIT 1
         SET   p.stock = coalesce(p.stock,0) + 1
@@ -1074,7 +1096,7 @@ NEO_OPT_QUERIES = {
                p.stock AS new_stock;
         """,
 
-        # 2) Rating −1 (Relationship)
+        # Bewertung (REVIEWED-Relation) um −1 senken, Minimum: 1
         """
         MATCH ()-[rev:REVIEWED]-()
         WITH  rev ORDER BY rev.id LIMIT 1
@@ -1087,7 +1109,7 @@ NEO_OPT_QUERIES = {
                rev.rating AS new_rating;
         """,
 
-        # 3) Cart-Menge +3
+        # Erhöhung der Menge im Warenkorb (HAS_IN_CART) um +3
         """
         MATCH ()-[c:HAS_IN_CART]-()
         WITH  c ORDER BY c.id LIMIT 1
@@ -1096,7 +1118,7 @@ NEO_OPT_QUERIES = {
                c.quantity AS new_quantity;
         """,
 
-        # 4) E-Mail-Suffix
+        # Anhängen eines Suffixes an die E-Mail-Adresse eines beliebigen Nutzers
         """
         MATCH (u:User) WITH u LIMIT 1
         SET   u.email = u.email + '.tmp'
@@ -1107,7 +1129,7 @@ NEO_OPT_QUERIES = {
 
     # ───────── DELETE ─────────
     Complexity.DELETE: [
-        # 1) Adresse-Knoten
+        # Löschen eines Address-Knotens (inkl. aller eingehenden/ausgehenden Kanten)
         """
         MATCH (a:Address)
         WITH  a ORDER BY a.id LIMIT 1
@@ -1116,7 +1138,7 @@ NEO_OPT_QUERIES = {
         RETURN deleted_address_id;
         """,
 
-        # 2) REVIEWED-Relationship
+        # Entfernen einer REVIEWED-Beziehung (inkl. ID-Rückgabe)
         """
         MATCH ()-[rev:REVIEWED]-()
         WITH  rev ORDER BY rev.id LIMIT 1
@@ -1125,7 +1147,7 @@ NEO_OPT_QUERIES = {
         RETURN deleted_review_rel_id;
         """,
 
-        # 3) HAS_IN_CART-Relationship
+        # Entfernen einer HAS_IN_CART-Beziehung (Relation wird explizit mit ID referenziert)
         """
         MATCH ()-[c:HAS_IN_CART]-()
         WHERE c.id IS NOT NULL
@@ -1135,7 +1157,7 @@ NEO_OPT_QUERIES = {
         RETURN deleted_cart_rel_id;
         """,
 
-        # 4) PURCHASED-Relationship
+        # Entfernen einer PURCHASED-Beziehung mit ID-Filterung
         """
         MATCH ()-[pur:PURCHASED]-()
         WHERE pur.id IS NOT NULL
@@ -1152,10 +1174,13 @@ NEO_OPT_QUERIES = {
 # Benchmark‑Runner -----------------------------------------------------------
 ###############################################################################
 
+# Definierte parallele Auslastungsstufen (Anzahl gleichzeitiger Threads)
 CONCURRENCY_LEVELS = [1, 3, 5, 10]
 
+# Pause nach Warm-up-Durchlauf in Sekunden
 WARMUP_SLEEP = 0.05 
 
+# Spaltenüberschriften der CSV-Datei zur Ergebnisspeicherung
 CSV_HEADER = [
     "db", "mode", "phase", "concurrency", "query_no", "repeat", "complexity",
     "duration_ms","per_query_ms","qps", "avg_cpu", "iowait_pct", "avg_mem",
@@ -1166,7 +1191,16 @@ CSV_HEADER = [
 
 def _warmup_parallel(func, query: str, concurrency: int):
     """
-    Führt die Query WARMUP_RUNS-mal parallel aus - ohne Mess- und Logik-Overhead.
+    Führt eine definierte Anzahl von Warm-up-Durchläufen für eine Query parallel aus.
+
+    Dies dient dem „Anwärmen“ der Datenbank und der JVM/Python VM,
+    um Messverzerrungen durch Initialisierungsaufwand zu minimieren.
+    Es findet keine Ergebnis- oder Zeitmessung statt.
+
+    Parameter:
+    - func: Funktion, die die Query ausführt (z. B. query_runner.run)
+    - query: Die Cypher- oder SQL-Anweisung als String
+    - concurrency: Anzahl der parallelen Threads für gleichzeitige Ausführung
     """
     if WARMUP_RUNS <= 0:
         logger.debug("Überspringe Warm-up, da WARMUP_RUNS <= 0.")
@@ -1176,18 +1210,24 @@ def _warmup_parallel(func, query: str, concurrency: int):
     logger.debug(f"Starte Warm-up: {total_runs} Durchläufe mit concurrency={concurrency}")
     logger.debug(f"Warm-up Query: {query.replace(chr(10), ' ')}")
 
+    # Ausführung mit ThreadPool für paralleles Warm-up
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futs = [ex.submit(func, query) for _ in range(total_runs)]
         for ft in as_completed(futs):
-            _ = ft.result()  # Fehler werden hier geworfen und nicht unterdrückt
+            _ = ft.result()  # Fehler (z. B. Verbindungsprobleme) werden bewusst nicht unterdrückt
 
     logger.debug(f"Warm-up abgeschlossen. Warte {WARMUP_SLEEP} Sekunden...")
     time.sleep(WARMUP_SLEEP)
 
+
 _CID_CACHE: dict[str, str] = {}
 
 def _cid_of(name: str) -> str:
-    """Liefert die volle Container-ID für einen Docker-Namen (mit Cache)."""
+    """Liefert die vollständige Container-ID zu einem gegebenen Docker-Container-Namen.
+    
+    Die Ergebnisse werden in einem lokalen Cache (_CID_CACHE) gespeichert,
+    um wiederholte `docker inspect`-Aufrufe zu vermeiden.
+    """
     if name in _CID_CACHE:
         return _CID_CACHE[name]
     cid = subprocess.check_output(
@@ -1198,7 +1238,10 @@ def _cid_of(name: str) -> str:
 
 def _run_and_time(func, *a, **kw) -> float:
     """
-    Führt func mit Argumenten aus und misst die Laufzeit in Millisekunden.
+    Führt die übergebene Funktion `func` mit den angegebenen Argumenten aus
+    und misst die Laufzeit in Millisekunden.
+    
+    Die gemessene Dauer wird als Float-Wert zurückgegeben.
     """
     logger.debug(f"Starte Zeitmessung für Funktion {func.__name__} mit args={a}, kwargs={kw}")
     t0 = time.perf_counter_ns()
@@ -1211,6 +1254,32 @@ def _run_and_time(func, *a, **kw) -> float:
 def _log_csv(writer, *, phase, db, mode, conc, idx, repeat,
              comp, dur, per_q_ms, qps, avg_cpu, iowait_pct, avg_mem,
              disk_mb, total_read_mb, total_write_mb, net_recv_mb, net_send_mb, stmt, res):
+    """
+    Schreibt eine vollständige Benchmark-Zeile in die CSV-Ausgabedatei und loggt
+    gleichzeitig eine kompakte Zusammenfassung der Metriken.
+
+    Parameter:
+    - writer: CSV-Writer-Objekt
+    - phase: Benchmark-Phase (z. B. warmup, measure)
+    - db: Datenbank (postgresql oder neo4j)
+    - mode: Ausführungsmodus (z. B. normal, optimized)
+    - conc: Concurrency-Level (gleichzeitige Threads)
+    - idx: Query-Nummer
+    - repeat: Wiederholungsindex
+    - comp: Komplexitätsstufe
+    - dur: Gesamtdauer in Millisekunden
+    - per_q_ms: Durchschnittsdauer pro Einzel-Query
+    - qps: Queries pro Sekunde
+    - avg_cpu: durchschnittliche CPU-Auslastung in %
+    - iowait_pct: IO-Warteanteil in %
+    - avg_mem: durchschnittlicher RAM-Verbrauch in MB
+    - disk_mb: Festplattenverbrauch insgesamt in MB
+    - total_read_mb: Lesezugriffe in MB
+    - total_write_mb: Schreibzugriffe in MB
+    - net_recv_mb / net_send_mb: Netzwerkverkehr in MB
+    - stmt: ausgeführte Query
+    - res: serialisiertes Query-Ergebnis
+    """
     row = [
         db, mode, phase, conc, idx, repeat, comp.value,
         f"{dur:.2f}", f"{per_q_ms:.2f}", f"{qps:.2f}", 
@@ -1231,6 +1300,12 @@ def _log_csv(writer, *, phase, db, mode, conc, idx, repeat,
 
 
 def _serialize_pg(cur, rows):
+    """
+    Serialisiert das Ergebnis eines PostgreSQL-Querys in ein standardisiertes Format.
+    
+    - Bei SELECT-Abfragen wird Anzahl und erste Zeile zurückgegeben.
+    - Bei Datenänderungen wird nur die betroffene Zeilenanzahl (`rowcount`) erfasst.
+    """
     if cur.description:  # SELECT
         result = {
             "rows": len(rows),
@@ -1244,6 +1319,12 @@ def _serialize_pg(cur, rows):
 
 
 def _serialize_neo(records, summary):
+    """
+    Serialisiert ein Neo4j-Ergebnisobjekt in ein standardisiertes Format.
+
+    - Bei MATCH-Queries mit RETURN wird Anzahl und erster Datensatz ausgegeben.
+    - Bei CREATE/SET/DELETE-Operationen werden Veränderungsmetriken übergeben.
+    """
     if records:  # MATCH … RETURN
         result = {
             "rows": len(records),
@@ -1265,50 +1346,90 @@ def _serialize_neo(records, summary):
 # PostgreSQL helpers ---------------------------------------------------------
 ###############################################################################
 
+# Verbindungsparameter für den PostgreSQL-Zugriff (lokale Testumgebung)
 PG_CONN_KWARGS = dict(host="localhost", port=5432,
                       user="postgres", password="pass", dbname="testdb")
 
-# >>> globaler Pool; wird in _pg_benchmark() initialisiert
+# >>> globaler Connection-Pool; wird zentral in _pg_benchmark() erzeugt
 PG_POOL: ThreadedConnectionPool | None = None
+
 
 def _run_pg_query(query: str):
     """
-    Führt genau **eine** SQL-Anweisung aus.
-    Die Verbindung stammt aus dem globalen Thread-Pool und hat Autocommit aktiv.
+    Führt exakt eine SQL-Query (SELECT, INSERT, UPDATE oder DELETE) gegen
+    die PostgreSQL-Datenbank aus.
+
+    Die Datenbankverbindung wird aus dem globalen ThreadPool entnommen und
+    nach Ausführung wieder zurückgegeben.
+
+    Ablauf:
+    ➊ Verbindung aus dem Pool beziehen
+    ➋ Autocommit aktivieren, um Transaktionen implizit zu committen
+    ➌ Cursor öffnen, Query ausführen, Ergebnis ggf. abrufen
+    ➍ Ergebnis serialisieren via _serialize_pg()
+    ➎ Verbindung wieder dem Pool zurückgeben
+
+    Fehler während der Ausführung werden geloggt und weitergereicht.
     """
     conn = PG_POOL.getconn()           # ➊ Connection leihen
     try:
-        conn.autocommit = True         # spart explizites COMMIT
+        conn.autocommit = True         # ➋ explizites COMMIT entfällt
         with conn.cursor() as cur:
             logger.debug(f"[PG_QUERY] Start: {query.strip()}")
-            cur.execute(query)
-            rows = cur.fetchall() if cur.description else []
-            result = _serialize_pg(cur, rows)
+            cur.execute(query)         # ➌ Query ausführen
+            rows = cur.fetchall() if cur.description else []  # Nur bei SELECT relevant
+            result = _serialize_pg(cur, rows)  # ➍ Ergebnisstruktur vereinheitlichen
             logger.debug(f"[PG_QUERY] Ergebnis: {result}")
             return result
     except Exception as e:
         logger.error(f"[PG_QUERY] Fehler bei Query: {query.strip()} | Fehler: {e}")
         raise
     finally:
-        PG_POOL.putconn(conn)          # ➋ Connection zurückgeben
+        PG_POOL.putconn(conn)          # ➎ Connection zurückgeben
         logger.debug("[PG_QUERY] Verbindung zurückgegeben an Pool")
 
 
 def _pg_benchmark(queries: Dict[Complexity, List[str]],
                   container: str, mode: str, output: Path) -> None:
+    """
+    Führt systematische Performance-Benchmarks für PostgreSQL durch.
+
+    Ablauf:
+    - Initialisiert einmalig den Docker-Container und dessen CPU-Zähler (Taktfrequenz)
+    - Erstellt einen ThreadedConnectionPool für parallele DB-Zugriffe
+    - Iteriert über alle Queries (nach Komplexität) und Concurrency-Stufen
+    - Führt jede Query im Warm-up (optional) und anschließend mehrfach im „steady“-Modus aus
+    - Misst dabei Laufzeiten, Systemressourcen (CPU, RAM, IO) und schreibt CSV-Ausgabe
+
+    Parameter:
+    - queries: Dictionary aus Query-Komplexitätsstufe → Liste von SQL-Queries
+    - container: Name des Docker-Containers, dessen Ressourcen gemessen werden
+    - mode: z. B. "normal" oder "optimized" zur Unterscheidung verschiedener DB-Versionen
+    - output: Pfad zur CSV-Zieldatei für Benchmark-Ergebnisse
+    """
     logger.info("[PG_BENCHMARK] starte, container=%s", container)
-    cid = _cid_of(container)                 # ➊ einmalig Container-ID
+
+    # ➊ Docker-ID und CPU-Taktfrequenz (für IO-Wait-Auswertung) holen
+    cid = _cid_of(container)
     clk_tck = _clk_tck_for_container(cid)
-    # Connection-Pool initialisieren
+
+    # Connection-Pool global initialisieren (für parallele Query-Ausführung)
     global PG_POOL
     PG_POOL = ThreadedConnectionPool(
-        minconn=1, maxconn=max(CONCURRENCY_LEVELS), **PG_CONN_KWARGS)
+        minconn=1,
+        maxconn=max(CONCURRENCY_LEVELS),
+        **PG_CONN_KWARGS
+    )
 
+    # Benchmark-Datei vorbereiten
     with open(output, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
-        w.writerow(CSV_HEADER)
+        w.writerow(CSV_HEADER)  # Kopfzeile schreiben
 
+        # Iterator über alle Kombinationen (Komplexität × Query)
         q_iter = [(c, q) for c, lst in queries.items() for q in lst]
+
+        # Schleife über definierte Concurrency-Stufen (z. B. 1, 3, 5, 10 Threads)
         for conc in CONCURRENCY_LEVELS:
             pbar = tqdm(q_iter, desc=f"PostgreSQL {mode} x{conc}")
             for idx, (comp, query) in enumerate(pbar, 1):
@@ -1317,60 +1438,68 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
                 if WARMUP_RUNS > 0:
                     logger.debug(f"[PG_BENCHMARK] Starte Warm-up für Query #{idx}")
                     warm_ms = _run_and_time(
-                        _warmup_parallel,        # <- neue Signatur
-                        _run_pg_query,           # Query-Runner
-                        query,                   # SQL-String
-                        conc                     # concurrency
+                        _warmup_parallel,  # Führt Query mehrfach parallel aus
+                        _run_pg_query,     # Funktionsreferenz: eine Query
+                        query,             # SQL-Statement
+                        conc               # Anzahl gleichzeitiger Threads
                     )
+                    # Warm-up-Ergebnisse loggen (ohne detaillierte Systemdaten)
                     _log_csv(w, phase="warmup", db="postgres", mode=mode,
-                            conc=conc, idx=idx, repeat=0, comp=comp,
-                            dur=warm_ms, avg_cpu=math.nan, iowait_pct=math.nan,
-                            avg_mem=math.nan, per_q_ms=math.nan, qps=math.nan,
-                            disk_mb=get_docker_disk_mb(container),
-                            total_read_mb=0, total_write_mb=0,
-                            net_recv_mb=0, net_send_mb=0,
-                            stmt=query, res={"note": "warmup"})
+                             conc=conc, idx=idx, repeat=0, comp=comp,
+                             dur=warm_ms, avg_cpu=math.nan, iowait_pct=math.nan,
+                             avg_mem=math.nan, per_q_ms=math.nan, qps=math.nan,
+                             disk_mb=get_docker_disk_mb(container),
+                             total_read_mb=0, total_write_mb=0,
+                             net_recv_mb=0, net_send_mb=0,
+                             stmt=query, res={"note": "warmup"})
 
                 # ---------- STEADY-RUNS ----------
-                for rep in range(1, REPETITIONS+1):
+                for rep in range(1, REPETITIONS + 1):
+                    # Systemzustand vor dem Lauf erfassen
                     io0 = _read_iowait_jiffies(cid)
-                    start_stats = _read_cgroup_stats(cid)      # ➋ Start-Snapshot
+                    start_stats = _read_cgroup_stats(cid)  # ➋
+
+                    # Zeitmessung + parallele Ausführung der Query
                     t0 = time.perf_counter_ns()
                     with ThreadPoolExecutor(max_workers=conc) as ex:
-                        futs = [ex.submit(_run_pg_query, query)
-                                for _ in range(conc)]
-                        first_result = futs[0].result()
-                    duration_ms = (time.perf_counter_ns()-t0)/1_000_000
-                    io1 = _read_iowait_jiffies(cid)
-                    end_stats = _read_cgroup_stats(cid)        # ➌ End-Snapshot
-                    d = _delta(start_stats, end_stats) 
-                    per_query_ms = duration_ms / conc               # Schnitt pro Request
-                    qps          = conc * 1000 / duration_ms        # Concurrency / ms → / s
+                        futs = [ex.submit(_run_pg_query, query) for _ in range(conc)]
+                        first_result = futs[0].result()  # erster Rückgabewert zur Logging-Ausgabe
+                    duration_ms = (time.perf_counter_ns() - t0) / 1_000_000
 
-                    # ─── Kennzahlen berechnen ─────────────────────────────
-                    elapsed_sec = duration_ms / 1000          # Messintervall
-                    cpu_sec     = d["cpu_usec"] / 1_000_000    # Δ CPU-Zeit
+                    # Systemzustand nach dem Lauf erfassen
+                    io1 = _read_iowait_jiffies(cid)
+                    end_stats = _read_cgroup_stats(cid)  # ➌
+                    d = _delta(start_stats, end_stats)  # Delta-Werte berechnen
+
+                    # Kennzahlen berechnen
+                    per_query_ms = duration_ms / conc
+                    qps = conc * 1000 / duration_ms
+                    elapsed_sec = duration_ms / 1000
+                    cpu_sec = d["cpu_usec"] / 1_000_000
                     delta_iowait_sec = (io1 - io0) / clk_tck
-                    iowait_pct       = (delta_iowait_sec / (elapsed_sec * CPU_CORES)) * 100
-                    avg_cpu = (cpu_sec / (elapsed_sec * CPU_CORES)) * 100     # kann >100% sein
-                    avg_mem  = (start_stats["mem_now"] +
-                                end_stats["mem_now"]) / 2 / 1024**2
-                    total_read_mb  = d["io_rbytes"] / 1_048_576
+                    iowait_pct = (delta_iowait_sec / (elapsed_sec * CPU_CORES)) * 100
+                    avg_cpu = (cpu_sec / (elapsed_sec * CPU_CORES)) * 100
+                    avg_mem = (start_stats["mem_now"] + end_stats["mem_now"]) / 2 / 1024**2
+                    total_read_mb = d["io_rbytes"] / 1_048_576
                     total_write_mb = d["io_wbytes"] / 1_048_576
-                    net_recv_mb     = d["net_rbytes"] / 1_048_576
-                    net_send_mb     = d["net_tbytes"] / 1_048_576
+                    net_recv_mb = d["net_rbytes"] / 1_048_576
+                    net_send_mb = d["net_tbytes"] / 1_048_576
                     disk_mb = get_docker_disk_mb(container)
 
+                    # Ergebnisse in CSV schreiben und in Logdatei ausgeben
                     _log_csv(w, phase="steady", db="postgres", mode=mode,
                              conc=conc, idx=idx, repeat=rep, comp=comp,
                              dur=duration_ms, per_q_ms=per_query_ms, qps=qps,
-                             avg_cpu=avg_cpu, iowait_pct=iowait_pct, avg_mem=avg_mem, disk_mb=disk_mb,
+                             avg_cpu=avg_cpu, iowait_pct=iowait_pct, avg_mem=avg_mem,
+                             disk_mb=disk_mb,
                              total_read_mb=total_read_mb,
                              total_write_mb=total_write_mb,
                              net_recv_mb=net_recv_mb, net_send_mb=net_send_mb,
                              stmt=query, res=first_result)
+
         logger.info(f"[PG_BENCHMARK] Benchmark abgeschlossen: {output.name}")
 
+    # Pool schließen (Verbindungen zurückgeben und schließen)
     if PG_POOL:
         PG_POOL.closeall()
 
@@ -1382,6 +1511,27 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
 NEO_BOLT_URI = "bolt://localhost:7687"
 
 def _run_neo_query(query: str, driver) -> dict:
+    """
+    Führt eine Cypher-Query in Neo4j aus und serialisiert das Ergebnis.
+
+    Ablauf:
+    - Erstellt eine Session über den bereitgestellten Neo4j-Driver
+    - Führt die übergebene Cypher-Anfrage aus
+    - Wandelt das Ergebnis mithilfe von _serialize_neo() in ein standardisiertes Dictionary um
+    - Gibt das serialisierte Ergebnis zurück
+
+    Parameter:
+    - query: Cypher-Abfrage (z. B. MATCH, CREATE etc.)
+    - driver: Neo4j-Treiber-Instanz (bereitgestellt durch neo4j.GraphDatabase.driver)
+
+    Rückgabe:
+    - Dictionary mit Ergebnisstatistiken oder Datenvorschau, z. B.:
+        - bei MATCH: Anzahl Zeilen, erste Zeile (`first`)
+        - bei CREATE/DELETE: Zähler für betroffene Knoten/Beziehungen/Eigenschaften
+
+    Fehlerbehandlung:
+    - Alle Ausnahmen werden geloggt und erneut geworfen, damit sie im Benchmarking-Framework sichtbar bleiben
+    """
     logger.debug(f"[NEO_QUERY] Starte Query")
     try:
         with driver.session() as sess:
@@ -1397,6 +1547,31 @@ def _run_neo_query(query: str, driver) -> dict:
 
 def _neo_benchmark(queries: Dict[Complexity, List[str]],
                    container: str, mode: str, output: Path) -> None:
+    """
+    Führt einen vollständigen Benchmark-Lauf für Neo4j aus.
+
+    Vorgehen:
+    - Erstellt einen Neo4j-Treiber auf Basis des BOLT-Protokolls
+    - Iteriert über alle Queries und definierten Concurrency-Werte
+    - Führt jede Query zunächst optional im "Warm-up" aus (mehrfach parallel, ohne Messwerte)
+    - Führt danach mehrere Wiederholungen mit Messung durch (REPETITIONS)
+    - Erfasst dabei die Metriken: Laufzeit, CPU, RAM, IO, Netz, Disk
+    - Loggt jede Einzelmessung in eine CSV-Datei mit Standard-Header
+
+    Parameter:
+    - queries: Dictionary mit Komplexitätsstufen und zugehörigen Cypher-Queries
+    - container: Name des Docker-Containers für den Benchmark
+    - mode: Beschreibung des Modus (z. B. "normal", "optimized")
+    - output: Pfad zur CSV-Zieldatei
+
+    Besonderheiten:
+    - Nutzt `_run_neo_query()` zur Ausführung einzelner Cypher-Befehle
+    - Nutzt Container-Statistiken für RAM, CPU, Disk etc. per cgroup-Auslesung
+    - Misst parallel mit ThreadPoolExecutor (abhängig von `CONCURRENCY_LEVELS`)
+    - Gibt das erste Ergebnis zurück und speichert alle Daten zeilenweise in der CSV
+
+    Die Funktion schließt Ressourcen (Treiber, Datei) sauber über `with`-Kontext.
+    """
     logger.info("[NEO_BENCHMARK] starte, container=%s", container)
     cid = _cid_of(container)
     clk_tck = _clk_tck_for_container(cid)
@@ -1472,6 +1647,15 @@ def _neo_benchmark(queries: Dict[Complexity, List[str]],
 ###############################################################################
 # Öffentliche Funktionen -----------------------------------------------------
 ###############################################################################
+"""
+Diese Funktionen kapseln die jeweiligen Benchmark-Aufrufe für PostgreSQL und Neo4j
+(in normaler und optimierter Variante). Sie dienen als Schnittstelle für das
+CLI-Frontend und schreiben die Ergebnisse in die übergebene CSV-Datei
+(innerhalb des "results/"-Verzeichnisses).
+
+Parameter:
+- output_csv: Dateiname für die CSV-Ergebnisdatei
+"""
 
 def run_pg_normal(output_csv: str = "pg_normal_results.csv"):
     _pg_benchmark(PG_NORMAL_QUERIES, "pg_test_normal", "normal", Path("results") / output_csv)
@@ -1488,6 +1672,26 @@ def run_neo_optimized(output_csv: str = "neo_opt_results.csv"):
 ###############################################################################
 # CLI Entry‑Point ------------------------------------------------------------
 ###############################################################################
+"""
+Command-Line-Interface (CLI) zum Starten einzelner Benchmarks.
+
+Parameter (via --args):
+--variant      [str]   Pflichtfeld. Auswahl der Benchmark-Variante:
+                       "pg_normal", "pg_opt", "neo_normal", "neo_opt"
+--users        [int]   Pflichtfeld. Wird nur im CSV-Filenamen verwendet.
+--round        [int]   Optionale Rundennummer für mehrfache Testsätze.
+--repetitions  [int]   Anzahl der Wiederholungen pro Query (default: 3).
+--warmups      [int]   Anzahl der Warm-up-Runden vor jeder Messung (default: 2).
+
+Ablauf:
+- Erzeugt das Zielverzeichnis "results/" falls nicht vorhanden
+- Setzt globale Konstanten `WARMUP_RUNS` und `REPETITIONS`
+- Generiert einen sprechenden CSV-Dateinamen mit Nutzeranzahl, Runde etc.
+- Führt je nach ausgewählter Variante den zugehörigen Benchmark aus
+
+Beispiel:
+    python benchmark.py --variant pg_opt --users 10000 --round 3
+"""
 
 if __name__ == "__main__":
 

@@ -1,4 +1,3 @@
-# main.py
 import subprocess, sys, time, logging
 from pathlib import Path
 from enum import Enum
@@ -983,6 +982,29 @@ NEO_OPT_QUERIES = {
 }
 
 
+"""
+Hilfsfunktionen zur Ausführung und Dokumentation von Benchmark-Queries:
+
+1. flatten_queries(qdict)
+   – Wandelt ein nach Komplexität gruppiertes Dictionary von SQL- oder Cypher-Queries in eine flache, sortierte Liste um.
+   – Die feste Reihenfolge (SIMPLE → … → DELETE) ermöglicht vergleichbare Abläufe in Benchmarks.
+   – Nicht vorhandene Komplexitätsstufen werden dabei übersprungen.
+
+2. exec_pg_queries(conn, queries)
+   – Führt eine Liste von SQL-Statements sequenziell auf einer bestehenden PostgreSQL-Verbindung aus.
+   – Ergebnisse werden gesammelt und – falls vorhanden – spaltenweise in Dictionaries überführt, um JSON-kompatibel zu sein.
+   – Rückgabewert ist eine Liste von Ergebnislisten (je Query eine).
+
+3. exec_neo_queries(driver, queries)
+   – Führt eine Liste von Cypher-Statements mit einem übergebenen Neo4j-Treiber aus.
+   – Verwendet `sess.run(...).data()` zur direkten Umwandlung in Listen von Dictionaries.
+   – Rückgabewert ist analog zu `exec_pg_queries`.
+
+4. dump_results(variant, rows_per_query, out_dir)
+   – Schreibt die Ergebnisse aller ausgeführten Queries zeilenweise in eine `.txt`-Datei im UTF-8-Format.
+   – Format: Variantentitel als Überschrift, dann je Query-Index die zugehörige Ergebnisliste als JSON-Block.
+   – Dient der optionalen Nachvollziehbarkeit und dem Export von Query-Resultaten für Debugging oder Analysezwecke.
+"""
 
 def flatten_queries(qdict: Dict[Complexity, List[str]]) -> List[str]:
     """Erhält die natürliche Reihenfolge SIMPLE→…→DELETE."""
@@ -1031,17 +1053,52 @@ def dump_results(variant: str, rows_per_query: List[list], out_dir: Path):
             f.write("\n\n")
     logging.info("📄 Ergebnisse für %s → %s", variant, outfile)
 
+
 def run_once(n_users: int) -> None:
+    """
+    Funktion: run_once(n_users)
+
+    Diese Funktion führt einen vollständigen End-to-End-Testlauf für eine bestimmte Anzahl an Nutzern (`n_users`) aus.
+    Ziel ist es, strukturierte Vergleichsdaten für verschiedene Datenbankvarianten zu erzeugen und abzuspeichern.
+
+    Ablauf:
+
+    1. Datengenerierung:
+    – Startet das Python-Skript `generate_data.py`, um eine synthetische JSON-Datenbasis zu erzeugen.
+    – Führt anschließend `export_sql_cypher.py` aus, um die Daten in SQL- und Cypher-kompatible Formate zu exportieren.
+
+    2. PostgreSQL (normal):
+    – Erzeugt Image und Container mit Basisstruktur.
+    – Führt strukturierte Inserts mit `insert_normal_postgresql_data.py` durch.
+    – Verbindet sich zur PostgreSQL-Instanz, führt alle definierten Queries aus (`PG_QUERIES`),
+        und speichert die Ergebnisse strukturiert im Verzeichnis `cmp_results`.
+    – Container und Image werden nach Abschluss gelöscht.
+
+    3. Neo4j (normal):
+    – Analog zu PostgreSQL: Aufbau des Containers, Laden der Struktur, Einfügen der Daten.
+    – Cypher-Queries (`NEO_NORMAL_QUERIES`) werden mit einem Bolt-Treiber ausgeführt.
+    – Die Ergebnisse werden ebenfalls in `cmp_results` abgelegt.
+
+    4. Neo4j (optimiert):
+    – Getrenntes Setup mit optimierter Modellierung.
+    – Führt eine zweite Query-Menge (`NEO_OPT_QUERIES`) aus und speichert Ergebnisse.
+
+    5. Clean-up:
+    – Unabhängig vom Ausgang des Skripts sorgt der `finally`-Block für ein sauberes Entfernen aller Docker-Komponenten,
+        um Konflikte in Folgeläufen zu vermeiden.
+
+    Hinweis: Alle Teilbereiche werden per Zeitmessung (`timeit`) geloggt, um Performance-Metriken bei Bedarf analysieren zu können.
+    """
     try:
         # ───────────────────────────────────────────────────────── Datengenerierung
-        #print(f"\n=== Starte Daten-Generation für {n_users} User ===")
-        #with timeit(f"generate_data.py ({n_users})"):
-        #    subprocess.run(
-        #        [sys.executable, "-u", str(GEN), "--users", str(n_users)],
-        #        check=True
-        #    )
+        print(f"\n=== Starte Daten-Generation für {n_users} User ===")
+        with timeit(f"generate_data.py ({n_users})"):
+           subprocess.run(
+               [sys.executable, "-u", str(GEN), "--users", str(n_users)],
+               check=True
+           )
 
-        # print("✔️  JSON-Export …")
+        print("✔️  JSON-Export …")
         with timeit("export_sql_cypher.py"):
            subprocess.run([sys.executable, "-u", str(EXPORT)], check=True)
 
@@ -1082,34 +1139,34 @@ def run_once(n_users: int) -> None:
         print("✔️  PostgreSQL-normal abgeschlossen.")
 
         # ─────────────────────────────────────────────────────── Neo4j (normal)
-        # print("\n=== Neo4j-normal: Container, Struktur & Inserts ===")
-        # build_normal_neo4j_image("./neo4j_normal")
-        # start_normal_neo4j_container()
-        # apply_normal_cypher_structure("./neo4j_normal/setup_neo4j_normal.cypher")
+        print("\n=== Neo4j-normal: Container, Struktur & Inserts ===")
+        build_normal_neo4j_image("./neo4j_normal")
+        start_normal_neo4j_container()
+        apply_normal_cypher_structure("./neo4j_normal/setup_neo4j_normal.cypher")
 
-        # with timeit("insert_normal_neo4j_data.py"):
-        #    subprocess.run(
-        #        [sys.executable, "-u", str(INSERT_NEO4J_NORMAL),
-        #         "--file-id", str(n_users), "--json-dir", "./output"],
-        #        check=True
-        #    )
+        with timeit("insert_normal_neo4j_data.py"):
+           subprocess.run(
+               [sys.executable, "-u", str(INSERT_NEO4J_NORMAL),
+                "--file-id", str(n_users), "--json-dir", "./output"],
+               check=True
+           )
 
-        # print("→ Führe Cypher-Queries (neo_normal) aus …")
-        # neo_driver = GraphDatabase.driver(
-        #    "bolt://localhost:7687", auth=("neo4j","superpassword55")
-        # )
-        # neo_queries_flat = flatten_queries(NEO_NORMAL_QUERIES)
-        # logging.debug("Neo_normal-Query-Liste:\n%s",
-        #              "\n".join(f"{i+1:02d} {q.splitlines()[0][:60]}…"
-        #                        for i, q in enumerate(neo_queries_flat)))
+        print("→ Führe Cypher-Queries (neo_normal) aus …")
+        neo_driver = GraphDatabase.driver(
+           "bolt://localhost:7687", auth=("neo4j","superpassword55")
+        )
+        neo_queries_flat = flatten_queries(NEO_NORMAL_QUERIES)
+        logging.debug("Neo_normal-Query-Liste:\n%s",
+                     "\n".join(f"{i+1:02d} {q.splitlines()[0][:60]}…"
+                               for i, q in enumerate(neo_queries_flat)))
 
-        # neo_results = exec_neo_queries(neo_driver, neo_queries_flat)
-        # dump_results("neo_normal", neo_results, BASE_DIR / "cmp_results")
-        # neo_driver.close()
+        neo_results = exec_neo_queries(neo_driver, neo_queries_flat)
+        dump_results("neo_normal", neo_results, BASE_DIR / "cmp_results")
+        neo_driver.close()
 
-        # stop_normal_neo4j_container()
-        # delete_normal_neo4j_image()
-        # print("✔️  Neo4j-normal abgeschlossen.")
+        stop_normal_neo4j_container()
+        delete_normal_neo4j_image()
+        print("✔️  Neo4j-normal abgeschlossen.")
 
         # ───────────────────────────────────────────────────── Neo4j (optimiert)
         print("\n=== Neo4j-optimiert: Container, Struktur & Inserts ===")

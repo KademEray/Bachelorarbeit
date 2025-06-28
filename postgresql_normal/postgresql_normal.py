@@ -4,16 +4,22 @@ from pathlib import Path
 import psycopg2
 
 # ----------------------------- Konfiguration
-IMAGE_NAME = "pg17-normal"
-CONTAINER_NAME = "pg_test_normal"
-POSTGRES_PORT = 5432
-DOCKERFILE_DIR = Path("./")  # Hier liegt dein Dockerfile
-sql_file = Path("./setup_postgres_normal.sql")
+IMAGE_NAME = "pg17-normal"               # Name des zu erstellenden Docker-Images
+CONTAINER_NAME = "pg_test_normal"        # Eindeutiger Name für den Container
+POSTGRES_PORT = 5432                     # Port, über den PostgreSQL erreichbar ist
+DOCKERFILE_DIR = Path("./")              # Pfad zum Verzeichnis mit dem Dockerfile
+sql_file = Path("./setup_postgres_normal.sql")  # SQL-Skript mit der Strukturdefinition
+
 
 # ----------------------------- Funktionen
 
 def build_normal_postgres_image(DOCKERFILE_DIR: Path = DOCKERFILE_DIR):
-    """Baut das Docker-Image aus dem Dockerfile."""
+    """
+    Baut ein Docker-Image mit einem angepassten PostgreSQL-Setup.
+
+    Das Image basiert auf dem in DOCKERFILE_DIR befindlichen Dockerfile
+    und enthält bereits die initiale Konfiguration (z. B. Tuning-Parameter).
+    """
     print(f"🛠 Baue Image '{IMAGE_NAME}' aus {DOCKERFILE_DIR} ...")
     subprocess.run([
         "docker", "build", "-t", IMAGE_NAME, "."
@@ -22,7 +28,12 @@ def build_normal_postgres_image(DOCKERFILE_DIR: Path = DOCKERFILE_DIR):
 
 
 def start_normal_postgres_container():
-    """Startet den PostgreSQL-Container aus dem Image."""
+    """
+    Startet einen neuen PostgreSQL-Container auf Basis des zuvor erstellten Images.
+
+    Der Container wird im Hintergrund ausgeführt und nach dem Stoppen automatisch gelöscht (--rm).
+    Es werden Umgebungsvariablen für das Passwort und die Datenbank gesetzt.
+    """
     print(f"🚀 Starte Container '{CONTAINER_NAME}' aus Image '{IMAGE_NAME}' ...")
     subprocess.run([
         "docker", "run", "-d", "--rm",
@@ -38,7 +49,12 @@ def start_normal_postgres_container():
 
 
 def apply_normal_sql_structure(sql_file: Path = sql_file):
-    """Spielt die SQL-Strukturdatei in die Datenbank ein."""
+    """
+    Spielt das Datenbankschema aus einer SQL-Datei in die laufende PostgreSQL-Datenbank ein.
+
+    Die SQL-Datei enthält typischerweise die Definitionen für Tabellen, Indizes und Constraints.
+    Die Verbindung wird direkt zum lokal laufenden Container aufgebaut.
+    """
     print(f"📄 Spiele SQL-Struktur aus {sql_file} ein...")
 
     try:
@@ -63,6 +79,12 @@ def apply_normal_sql_structure(sql_file: Path = sql_file):
 
 
 def stop_normal_postgres_container():
+    """
+    Stoppt den laufenden PostgreSQL-Container und wartet auf dessen vollständige Entfernung.
+
+    Diese Funktion ist hilfreich, um sicherzustellen, dass keine Altinstanzen beim Wiederaufbau stören.
+    Es wird überprüft, ob der Container nach dem Stoppen tatsächlich nicht mehr existiert.
+    """
     print(f"🛑 Versuche Container '{CONTAINER_NAME}' zu stoppen...")
     try:
         subprocess.run(["docker", "stop", CONTAINER_NAME], check=True)
@@ -85,7 +107,11 @@ def stop_normal_postgres_container():
 
 
 def delete_normal_postgres_image():
-    """Löscht das erstellte Docker-Image."""
+    """
+    Entfernt das erstellte Docker-Image für PostgreSQL.
+
+    Diese Funktion ist nützlich zur Bereinigung nach einem Testlauf oder vor dem erneuten Aufbau eines Images.
+    """
     print(f"🗑️  Versuche Image '{IMAGE_NAME}' zu löschen...")
     try:
         subprocess.run(["docker", "rmi", IMAGE_NAME], check=True)
@@ -96,7 +122,14 @@ def delete_normal_postgres_image():
         print(f"❗ Fehler beim Löschen des Images: {e}")
 
 def main():
-    """Hauptfunktion zum Ausführen des Skripts."""
+    """
+    Hauptablauf zur Ausführung der vorbereitenden Schritte:
+    - Bauen des Docker-Images
+    - Starten des Containers
+    - Einspielen der Datenbankstruktur
+
+    Kann durch weitere Schritte wie Datenimport oder Performance-Messungen ergänzt werden.
+    """
     try:
         # 1) Setup
         build_normal_postgres_image()

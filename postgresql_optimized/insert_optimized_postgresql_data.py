@@ -9,7 +9,15 @@ from typing import List
 
 BATCH_SIZE = 10_000
 
+
 def fix_sequences(conn):
+    """
+    Hilfsfunktion zum Zurücksetzen aller ID-Sequenzen auf den korrekten Wert
+    Hintergrund: Bei direktem Einfügen von Daten über SQL werden ID-Sequenzen
+    nicht automatisch angepasst. Diese Funktion stellt sicher, dass neu
+    eingefügte Datensätze keine Konflikte mit bestehenden IDs verursachen.
+    """
+    # Zuordnung von Sequenznamen zu ihren zugehörigen Tabellen
     seq_map = {
         'users_id_seq'              : 'users',
         'addresses_id_seq'          : 'addresses',
@@ -28,6 +36,8 @@ def fix_sequences(conn):
     with conn.cursor() as cur:
         for seq_name, table_name in seq_map.items():
             print(f"🔁 Setze Sequence {seq_name} für Tabelle {table_name} …")
+            # Setzt den aktuellen Wert der Sequenz auf das Maximum der ID-Spalte
+            # oder auf 0, falls die Tabelle leer ist
             cur.execute(
                 sql.SQL("SELECT setval(%s, COALESCE((SELECT MAX(id) FROM {}), 0))")
                     .format(sql.Identifier(table_name)),
@@ -36,37 +46,48 @@ def fix_sequences(conn):
     conn.commit()
     print("✅ Alle Sequences wurden angepasst.")
 
+
 def insert_dynamic_with_executemany(cur, conn, table: str, rows: List[dict]):
+    # Überspringt die Verarbeitung, wenn keine Daten vorhanden sind
     if not rows:
         return
-    keys        = rows[0].keys()
-    columns     = ", ".join(keys)
-    placeholders= ", ".join(["%s"] * len(keys))
-    query       = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+
+    # Dynamisches Ermitteln der Spaltennamen und Platzhalter für das INSERT-Statement
+    keys         = rows[0].keys()
+    columns      = ", ".join(keys)
+    placeholders = ", ".join(["%s"] * len(keys))
+    query        = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
 
     batch = []
     for row in tqdm(rows, desc=f"  ↳ {table}", unit="rows", ncols=80):
+        # Umwandlung jedes Dictionaries in ein Tupel zur Verwendung mit psycopg2
         batch.append(tuple(row[k] for k in keys))
+        # Wenn die definierte Batch-Größe erreicht ist, wird ein Block in die DB geschrieben
         if len(batch) >= BATCH_SIZE:
             cur.executemany(query, batch)
             conn.commit()
             batch.clear()
+    # Restliche Daten nach der Schleife einfügen (falls < BATCH_SIZE)
     if batch:
         cur.executemany(query, batch)
         conn.commit()
 
+
 def insert_data_to_optimized_postgres(file_id: int, json_dir: str = "../output"):
+    # Gibt an, welche Datei geladen werden soll
     print(f"\n📁 Lade Datei: users_{file_id}.json aus {json_dir}/ ...")
     json_path = Path(json_dir) / f"users_{file_id}.json"
     if not json_path.exists():
         print(f"❌ Datei nicht gefunden: {json_path}")
         return
 
+    # Öffnet und lädt die JSON-Datei mit den zu importierenden Daten
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     print("🔌 Stelle Verbindung zur PostgreSQL-Datenbank her ...")
     try:
+        # Verbindungsaufbau zur lokalen PostgreSQL-Datenbank
         conn = psycopg2.connect(
             host="localhost",
             port=5432,
@@ -80,7 +101,7 @@ def insert_data_to_optimized_postgres(file_id: int, json_dir: str = "../output")
         print(f"❌ Verbindungsfehler: {e}")
         return
 
-    # 📦 Füge statische Daten ein (nur einmal)
+    # Einfügen statischer Produktdaten (einmalig erforderlich)
     static_sql_path = Path(__file__).parent / "static_products_data.sql"
     if static_sql_path.exists():
         print(f"\n📄 Füge statische Produktdaten aus '{static_sql_path.name}' ein ...")
@@ -96,7 +117,7 @@ def insert_data_to_optimized_postgres(file_id: int, json_dir: str = "../output")
     else:
         print(f"⚠️  Statische SQL-Datei nicht gefunden: {static_sql_path}")
 
-    # Tabellen für dynamische Daten
+    # Reihenfolge der dynamischen Tabellen, deren Inhalte aus der JSON-Datei eingefügt werden
     dynamic_tables = [
         "users", "addresses",
         "orders", "order_items", "payments", "shipments",
@@ -117,22 +138,42 @@ def insert_data_to_optimized_postgres(file_id: int, json_dir: str = "../output")
             print(f"⚠️  Keine Einträge in '{table}', übersprungen.")
             continue
 
+        # Vorbereitung des SQL-Befehls zur Datenübertragung
         keys = rows[0].keys()
         columns = ", ".join(keys)
         placeholders = ", ".join(["%s"] * len(keys))
         query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
 
+        # Übergabe an Hilfsfunktion für batchweisen Import
         insert_dynamic_with_executemany(cur, conn, table, rows)
 
+    # Nach dem Import werden die Sequenzen aktualisiert, um Konflikte mit zukünftigen Inserts zu vermeiden
     fix_sequences(conn)
     cur.close()
     conn.close()
     print(f"\n✅ Alle Daten aus Datei 'users_{file_id}.json' wurden erfolgreich eingefügt.")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--file-id", type=int, required=True, help="Zahl X für Datei 'users_X.json'")
-    parser.add_argument("--json-dir", type=str, default="../output", help="Ordnerpfad zur JSON-Datei")
-    args = parser.parse_args()
 
+if __name__ == "__main__":
+    # Initialisiert Argumentparser zur Übergabe von Kommandozeilenargumenten
+    parser = argparse.ArgumentParser()
+    
+    # Erwartet einen Integer-Parameter --file-id (z. B. 3 für 'users_3.json')
+    parser.add_argument(
+        "--file-id",
+        type=int,
+        required=True,
+        help="Zahl X für Datei 'users_X.json'"
+    )
+
+    # Optionaler Parameter für das Verzeichnis, in dem sich die JSON-Dateien befinden
+    parser.add_argument(
+        "--json-dir",
+        type=str,
+        default="../output",
+        help="Ordnerpfad zur JSON-Datei"
+    )
+
+    # Parsed die Argumente und übergibt sie an die Hauptfunktion
+    args = parser.parse_args()
     insert_data_to_optimized_postgres(args.file_id, args.json_dir)
