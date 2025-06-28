@@ -168,15 +168,21 @@ def export_static_tables_to_sql_and_cypher(json_path: Path,
 
     csv_tables = {
         "products": [
-            "id:ID(Product)", "name", "description",
+            "product_id:ID(Product)",  
+            "id:int",                   
+            "name", "description",
             "price:float", "stock:int",
             "created_at:datetime", "updated_at:datetime"
         ],
         "categories": [
-            "id:ID(Category)", "name"
+            "category_id:ID(Category)",
+            "id:int",
+            "name"
         ],
         "product_categories": [
-            "product_id:START_ID(Product)", "category_id:END_ID(Category)", ":TYPE"
+            "product_id:START_ID(Product)",
+            "category_id:END_ID(Category)",
+            ":TYPE"
         ]
     }
 
@@ -190,22 +196,38 @@ def export_static_tables_to_sql_and_cypher(json_path: Path,
         rows = data.get(table, [])
         if not rows:
             continue
-        filename = table_to_filename[table]
-        path = csv_tmp_dir / filename
 
-        with open(path, "w", encoding="utf-8", newline='') as f_out:
+        filename = table_to_filename[table]
+        path     = csv_tmp_dir / filename
+
+        with open(path, "w", encoding="utf-8", newline="") as f_out:
             writer = csv.DictWriter(f_out, fieldnames=header)
             writer.writeheader()
+
             for row in rows:
                 row_out = {}
-                for k in header:
-                    if k == ":TYPE":
+
+                for col in header:
+                    # :TYPE wird separat gesetzt (nur bei product_categories)
+                    if col == ":TYPE":
                         continue
-                    key = k.split(":")[0]
-                    value = row.get(key)
-                    row_out[k] = value if value is not None else ""
+
+                    base = col.split(":")[0]          # z. B. product_id, id, name …
+
+                    # ----------------------------- #
+                    #  Import-ID automatisch füllen
+                    # ----------------------------- #
+                    # Wenn eine Spalte …_id *leer* wäre, übernehme fachliche row["id"]
+                    if base.endswith("_id") and base not in row and "id" in row:
+                        row_out[col] = row["id"]
+                    else:
+                        # normaler Lookup, fehlt der Key → leere Zeichenkette
+                        row_out[col] = row.get(base) if row.get(base) is not None else ""
+
+                # Relationship-Typ für die Zuordnungstabelle setzen
                 if table == "product_categories":
                     row_out[":TYPE"] = "BELONGS_TO"
+
                 writer.writerow(row_out)
 
     # CSV-Dateien in beide Neo4j-Verzeichnisse kopieren

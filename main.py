@@ -27,14 +27,15 @@ INSERT_POSTGRESQL_OPTIMIZED  = BASE_DIR / "postgresql_optimized" / "insert_optim
 INSERT_NEO4J_NORMAL  = BASE_DIR / "neo4j_normal" / "insert_normal_neo4j_data.py"
 INSERT_NEO4J_OPTIMIZED  = BASE_DIR / "neo4j_optimized" / "insert_optimized_neo4j_data.py"
 BENCH   = BASE_DIR / "performance_benchmark.py"
+ANALYSE = BASE_DIR / "analyse.py"
 
-USER_STEPS = [1000]
+USER_STEPS = [100, 1000]
 
-MAX_ROUNDS = 1
+MAX_ROUNDS = 2
 
-repetitions = 1  # Anzahl der Wiederholungen für den Benchmark
+repetitions = 3  # Anzahl der Wiederholungen für den Benchmark
 
-warmups = 0  # Anzahl der Warmup-Runden vor dem eigentlichen Benchmark am besten 2
+warmups = 2  # Anzahl der Warmup-Runden vor dem eigentlichen Benchmark am besten 2
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,33 +152,33 @@ def run_once(n_users: int, rounds: int) -> None:
         logging.info("Beendet Normal Neo4j Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
 
         #---Optimized Neo4j---
-        #logging.info("Starte Optimized Neo4j Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
+        logging.info("Starte Optimized Neo4j Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
 
         # 1) Setup
-        #build_optimized_neo4j_image()
-        #start_optimized_neo4j_container()
-        #apply_optimized_cypher_structure()
+        build_optimized_neo4j_image("./neo4j_optimized")
+        start_optimized_neo4j_container()
+        apply_optimized_cypher_structure("./neo4j_optimized/setup_neo4j_optimized.cypher")
 
         # 2) Insert
-        #with timeit("insert_optimized_neo4j_data.py"):
-        #    subprocess.run([sys.executable, "-u", str(INSERT_NEO4J_OPTIMIZED),
-        #                    "--file-id", str(n_users),
-        #                    "--json-dir", "./output"],
-        #                   check=True)
+        with timeit("insert_optimized_neo4j_data.py"):
+            subprocess.run([sys.executable, "-u", str(INSERT_NEO4J_OPTIMIZED),
+                            "--file-id", str(n_users),
+                            "--json-dir", "./output"],
+                           check=True)
 
         # 3) Benchmark
-        #with timeit("performance_benchmark.py"):
-        #    subprocess.run([sys.executable, "-u", str(BENCH),
-        #                    "--variant", "neo_opt",
-        #                    "--users", str(n_users),
-        #                    "--round", str(rounds),
-        #                    "--repetitions", str(repetitions),
-        #                    "--warmups", str(warmups)],
-        #                   check=True)
+        with timeit("performance_benchmark.py"):
+            subprocess.run([sys.executable, "-u", str(BENCH),
+                            "--variant", "neo_opt",
+                            "--users", str(n_users),
+                            "--round", str(rounds),
+                            "--repetitions", str(repetitions),
+                            "--warmups", str(warmups)],
+                           check=True)
         # 4) Stop und Cleanup
-        #stop_optimized_neo4j_container()
-        #delete_optimized_neo4j_image()   
-        #logging.info("Beendet Optimized Neo4j Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
+        stop_optimized_neo4j_container()
+        delete_optimized_neo4j_image()   
+        logging.info("Beendet Optimized Neo4j Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
 
         logging.info("Alle Schritte für %d Nutzer (Runde %d) erfolgreich abgeschlossen", n_users, rounds)
     
@@ -197,6 +198,11 @@ def main():
     for rnd in range(1, MAX_ROUNDS + 1):
         for n_users in USER_STEPS:
             run_once(n_users, rnd)
+    
+    # Analyse der Ergebnisse
+    with timeit("analyse.py"):
+        subprocess.run([sys.executable, "-u", str(ANALYSE)], check=True)
+        logging.info("Analyse abgeschlossen. Ergebnisse in 'results/' und 'plots/' gespeichert.")
 
 if __name__ == "__main__":
     main()

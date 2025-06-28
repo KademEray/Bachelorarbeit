@@ -185,3 +185,6 @@ postgresql_optimized/static_products_data.sql
 /neo4j_optimized/import
 /neo4j_optimized/neo4j_data
 neo4j_schema_dump.json
+/cmp_results
+/plots
+/results

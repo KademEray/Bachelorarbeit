@@ -200,195 +200,309 @@ class Complexity(Enum):
     UPDATE = "update"
     DELETE = "delete"
 
-def make_new_ids() -> dict[str, str | int]:
-    new_ids = {
-        "new_big_id": random.randint(10_000_000, 99_999_999),
-        "new_cat_name": f"NewCat_{uuid.uuid4().hex[:6]}",
-        "new_prod_name": f"NewProd_{uuid.uuid4().hex[:6]}",
-        "new_track_no": "TRK" + ''.join(random.choices(
-            string.ascii_uppercase + string.digits, k=6)),
-    }
-    logger.debug(f"Generierte neue IDs: {new_ids}")
-    return new_ids
-
-
 
 # ==========================================================
 # PostgreSQL-Benchmark-Queries (Normal & Optimised)
 # ==========================================================
 PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
 
-    # ───────────── SIMPLE ─────────────
+    # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
-        "SELECT * FROM products LIMIT 10000;",
-        "SELECT id, name FROM categories LIMIT 1000;",
-        "SELECT * FROM addresses LIMIT 1;"
+        "SELECT id, name, price, stock, created_at, updated_at FROM products ORDER BY id LIMIT 10000;",
+        "SELECT id, name FROM categories ORDER BY id LIMIT 1000;",
+        "SELECT * FROM addresses ORDER BY id LIMIT 25;",
     ],
 
-    # ───────────── MEDIUM ─────────────
+    # ───────── MEDIUM ─────────
     Complexity.MEDIUM: [
-        # alle Produkte, die überhaupt Kategorien besitzen
-        """SELECT p.* FROM products p
-           WHERE EXISTS (SELECT 1 FROM product_categories pc
-                         WHERE pc.product_id = p.id)
-           LIMIT 100;""",
+        # Produkte mit mindestens einer Kategorie
+        """
+        SELECT p.id, p.name, p.price, p.stock, p.created_at, p.updated_at
+          FROM products p
+         WHERE EXISTS ( SELECT 1
+                          FROM product_categories pc
+                         WHERE pc.product_id = p.id )
+         ORDER BY p.id
+         LIMIT 100;
+        """,
 
-        # letzte Bestellung (irgendeines Users) + Positionen
-        """SELECT p.*, oi.quantity
-           FROM orders o
-           JOIN order_items oi ON oi.order_id = o.id
-           JOIN products    p  ON p.id = oi.product_id
-           ORDER BY o.created_at DESC
-           LIMIT 1;""",
+        # 20 Positionen aus den zuletzt angelegten Bestellungen
+        """
+        SELECT p.id,
+               p.name,
+               p.price,
+               p.stock,
+               p.created_at,
+               p.updated_at,
+               oi.quantity
+          FROM orders       o
+          JOIN order_items  oi ON oi.order_id = o.id
+          JOIN products     p  ON p.id        = oi.product_id
+         ORDER BY o.created_at DESC, o.id DESC, p.id
+         LIMIT 20;
+        """,
 
-        # fünf neueste Reviews (egal zu welchem Produkt)
-        """SELECT * FROM reviews
-           ORDER BY created_at DESC
-           LIMIT 5;"""
+        # fünf neueste Reviews (beliebige Produkte)
+        """
+        SELECT id,
+               user_id,
+               product_id,
+               rating,
+               created_at
+          FROM reviews
+         ORDER BY created_at DESC, id DESC
+         LIMIT 5;
+        """,
     ],
 
-    # ───────────── COMPLEX ─────────────
+    # ───────── COMPLEX ─────────
     Complexity.COMPLEX: [
-        # Bestell-Summen pro Order
-        """SELECT o.id, o.created_at,
-                 SUM(oi.quantity * oi.price) AS total
-           FROM orders o
-           JOIN order_items oi ON oi.order_id = o.id
-           GROUP BY o.id
-           LIMIT 50;""",
+        # Bestellsummen pro Bestellung
+        """
+        SELECT o.id,
+               o.created_at,
+               SUM(oi.quantity * oi.price) AS total
+          FROM orders       o
+          JOIN order_items  oi ON oi.order_id = o.id
+         GROUP BY o.id, o.created_at
+         ORDER BY o.id
+         LIMIT 50;
+        """,
 
         # Produkte mit Ø-Rating > 4
-        """SELECT p.id, p.name, AVG(r.rating) AS avg_rating
-           FROM products p
-           JOIN reviews r ON r.product_id = p.id
-           GROUP BY p.id, p.name
-           HAVING AVG(r.rating) > 4;""",
+        """
+        SELECT p.id,
+               p.name,
+               AVG(r.rating) AS avg_rating
+          FROM products p
+          JOIN reviews  r ON r.product_id = p.id
+         GROUP BY p.id, p.name
+        HAVING AVG(r.rating) > 4
+         ORDER BY avg_rating DESC, p.id LIMIT 200;
+        """,
 
-        # Bestellungen letztes Monat pro User (> 0)
-        """SELECT u.id, COUNT(*) AS orders_last_30d
-           FROM users u
-           JOIN orders o ON o.user_id = u.id
-           WHERE o.created_at >= CURRENT_DATE - INTERVAL '30 days'
-           GROUP BY u.id
-           HAVING COUNT(*) > 0
-           LIMIT 50;"""
+        # Bestellungen der letzten 30 Tage pro User (>0)
+        """
+        SELECT u.id,
+               COUNT(*) AS orders_last_30d
+          FROM users  u
+          JOIN orders o ON o.user_id = u.id
+         WHERE o.created_at >= CURRENT_DATE - INTERVAL '30 days'
+         GROUP BY u.id
+       HAVING COUNT(*) > 0
+         ORDER BY u.id
+         LIMIT 50;
+        """,
     ],
 
-    # ───────────── VERY COMPLEX ─────────────
+    # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
-        # Cross-Sell: Top-gekauftes Produkt ermitteln,
-        # Kunden dieses Produkts kaufen etwas anderes …
+        # Cross-Sell: meistgekauftes Produkt & zugehörige Empfehlungen
         """
         WITH top_prod AS (
-            SELECT product_id
-            FROM order_items
-            GROUP BY product_id
-            ORDER BY COUNT(*) DESC
-            LIMIT 1
+                SELECT product_id
+                  FROM order_items
+                 GROUP BY product_id
+                 ORDER BY COUNT(*) DESC, product_id
+                 LIMIT 1
         ),
         buyers AS (
-            SELECT DISTINCT o.user_id
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.id
-            WHERE oi.product_id = (SELECT product_id FROM top_prod)
+                SELECT DISTINCT o.user_id
+                  FROM orders       o
+                  JOIN order_items oi ON oi.order_id = o.id
+                 WHERE oi.product_id = (SELECT product_id FROM top_prod)
         )
-        SELECT oi2.product_id AS rec_id, COUNT(*) AS freq
-        FROM orders o
-        JOIN order_items oi2 ON oi2.order_id = o.id
-        WHERE o.user_id IN (SELECT user_id FROM buyers)
-          AND oi2.product_id <> (SELECT product_id FROM top_prod)
-        GROUP BY oi2.product_id
-        ORDER BY freq DESC
-        LIMIT 10;""",
+        SELECT oi2.product_id AS rec_id,
+               COUNT(*)       AS freq
+          FROM orders       o
+          JOIN order_items  oi2 ON oi2.order_id = o.id
+         WHERE o.user_id IN (SELECT user_id FROM buyers)
+           AND oi2.product_id <> (SELECT product_id FROM top_prod)
+         GROUP BY oi2.product_id
+         ORDER BY freq DESC, oi2.product_id
+         LIMIT 20;
+        """,
 
-        # View + Purchase beliebiger User
+        # Produkte, die ein User sowohl angesehen als auch gekauft hat
         """
-        SELECT DISTINCT p.id, p.name
-        FROM product_views  v
-        JOIN orders         o  ON o.user_id = v.user_id
-        JOIN order_items    oi ON oi.order_id = o.id
-        JOIN products       p  ON p.id = v.product_id
-                               AND p.id = oi.product_id
-        LIMIT 25;""",
+        SELECT DISTINCT p.id,
+                        p.name
+          FROM product_views v
+          JOIN orders        o  ON o.user_id    = v.user_id
+          JOIN order_items   oi ON oi.order_id  = o.id
+          JOIN products      p  ON p.id         = v.product_id
+                               AND p.id         = oi.product_id
+         ORDER BY p.id
+         LIMIT 25;
+        """,
 
-        # Zwei-Hop Netz um dasselbe top-Produkt
+        # Zwei-Hop-Netz rund um dasselbe Top-Produkt
         """
         WITH top_prod AS (
-            SELECT product_id
-            FROM order_items
-            GROUP BY product_id
-            ORDER BY COUNT(*) DESC
-            LIMIT 1
+                SELECT product_id
+                  FROM order_items
+                 GROUP BY product_id
+                 ORDER BY COUNT(*) DESC, product_id
+                 LIMIT 1
         ),
         buyers AS (
-            SELECT DISTINCT user_id
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.id
-            WHERE oi.product_id = (SELECT product_id FROM top_prod)
+                SELECT DISTINCT user_id
+                  FROM orders       o
+                  JOIN order_items oi ON oi.order_id = o.id
+                 WHERE oi.product_id = (SELECT product_id FROM top_prod)
         )
-        SELECT oi2.product_id, COUNT(*) AS freq
-        FROM orders o
-        JOIN order_items oi2 ON oi2.order_id = o.id
-        WHERE o.user_id IN (SELECT user_id FROM buyers)
-          AND oi2.product_id <> (SELECT product_id FROM top_prod)
-        GROUP BY oi2.product_id
-        ORDER BY freq DESC
-        LIMIT 20;"""
+        SELECT oi2.product_id,
+               COUNT(*) AS freq
+          FROM orders       o
+          JOIN order_items  oi2 ON oi2.order_id = o.id
+         WHERE o.user_id IN (SELECT user_id FROM buyers)
+           AND oi2.product_id <> (SELECT product_id FROM top_prod)
+         GROUP BY oi2.product_id
+         ORDER BY freq DESC, oi2.product_id
+         LIMIT 20;
+        """,
     ],
 
-    # ───────────── CREATE ─────────────
+    # ───────── CREATE ─────────
     Complexity.CREATE: [
-        # neue Adresse für irgendeinen User
+        # neue Adresse
         """
         INSERT INTO addresses (user_id, street, city, zip, country, is_primary)
         VALUES (
             (SELECT id FROM users LIMIT 1),
             'Foo-' || gen_random_uuid()::text,
-            'Bar City', '12345', 'DE', FALSE
-        );""",
+            'Bar City',
+            '12345',
+            'DE',
+            FALSE
+        )
+        RETURNING id AS address_id;
+        """,
 
         # neue Bestellung
         """
         INSERT INTO orders (user_id, status, total, created_at)
         VALUES (
             (SELECT id FROM users LIMIT 1),
-            'pending', 0.0, CURRENT_TIMESTAMP
-        );""",
+            'pending',
+            0.0,
+            CURRENT_TIMESTAMP
+        )
+        RETURNING id AS order_id;
+        """,
 
         # Cart-Item
         """
         INSERT INTO cart_items (user_id, product_id, quantity, added_at)
         VALUES (
-            (SELECT id FROM users LIMIT 1),
+            (SELECT id FROM users    LIMIT 1),
             (SELECT id FROM products LIMIT 1),
-            2, CURRENT_TIMESTAMP
-        );""",
+            2,
+            CURRENT_TIMESTAMP
+        )
+        RETURNING id AS cart_item_id;
+        """,
 
         # Produkt-View
         """
         INSERT INTO product_views (user_id, product_id, viewed_at)
         VALUES (
-            (SELECT id FROM users LIMIT 1),
+            (SELECT id FROM users    LIMIT 1),
             (SELECT id FROM products LIMIT 1),
             CURRENT_TIMESTAMP
-        );"""
+        )
+        RETURNING id AS product_view_id;
+        """
     ],
 
-    # ───────────── UPDATE ─────────────
+    # ───────── UPDATE ─────────
     Complexity.UPDATE: [
-        "UPDATE products  SET stock = stock + 1 WHERE id = (SELECT id FROM products LIMIT 1);",
-        "UPDATE reviews   SET rating = GREATEST(rating - 1, 1) WHERE id = (SELECT id FROM reviews LIMIT 1);",
-        "UPDATE cart_items SET quantity = quantity + 3 WHERE id = (SELECT id FROM cart_items LIMIT 1);",
-        "UPDATE users     SET email = email || '.tmp' WHERE id = (SELECT id FROM users LIMIT 1);"
+        """
+        UPDATE products
+        SET stock = stock + 1
+        WHERE id = (SELECT id FROM products LIMIT 1)
+        RETURNING id AS product_id, stock AS new_stock;
+        """,
+
+        """
+        UPDATE reviews
+        SET rating = GREATEST(rating - 1, 1)
+        WHERE id = (SELECT id FROM reviews LIMIT 1)
+        RETURNING id AS review_id, rating AS new_rating;
+        """,
+
+        """
+        UPDATE cart_items
+        SET quantity = quantity + 3
+        WHERE id = (SELECT id FROM cart_items LIMIT 1)
+        RETURNING id AS cart_item_id, quantity AS new_quantity;
+        """,
+
+        """
+        UPDATE users
+        SET email = email || '.tmp'
+        WHERE id = (SELECT id FROM users LIMIT 1)
+        RETURNING id AS user_id, email AS new_email;
+        """
     ],
 
-    # ───────────── DELETE ─────────────
+    # ───────── DELETE ─────────
     Complexity.DELETE: [
-        "DELETE FROM addresses WHERE id = (SELECT id FROM addresses LIMIT 1);",
-        "DELETE FROM reviews   WHERE id = (SELECT id FROM reviews   LIMIT 1);",
-        "DELETE FROM cart_items WHERE id = (SELECT id FROM cart_items LIMIT 1);",
-        "DELETE FROM product_purchases WHERE id = (SELECT id FROM product_purchases LIMIT 1);"
-    ]
+        """
+        WITH victim AS (
+            SELECT id
+            FROM   addresses
+            ORDER  BY id
+            LIMIT  1
+        )
+        DELETE FROM addresses a
+        USING victim
+        WHERE a.id = victim.id
+        RETURNING a.id AS deleted_address_id;
+        """,
+
+        # 2) Review löschen
+        """
+        WITH victim AS (
+            SELECT id
+            FROM   reviews
+            ORDER  BY id
+            LIMIT  1
+        )
+        DELETE FROM reviews r
+        USING victim
+        WHERE r.id = victim.id
+        RETURNING r.id AS deleted_review_id;
+        """,
+
+        # 3) Cart-Item löschen
+        """
+        WITH victim AS (
+            SELECT id
+            FROM   cart_items
+            ORDER  BY id
+            LIMIT  1
+        )
+        DELETE FROM cart_items c
+        USING victim
+        WHERE c.id = victim.id
+        RETURNING c.id AS deleted_cart_item_id;
+        """,
+
+        # 4) Product-Purchase löschen
+        """
+        WITH victim AS (
+            SELECT id
+            FROM   product_purchases
+            ORDER  BY id
+            LIMIT  1
+        )
+        DELETE FROM product_purchases pp
+        USING victim
+        WHERE pp.id = victim.id
+        RETURNING pp.id AS deleted_purchase_id;
+        """
+    ],
 }
 
 
@@ -401,275 +515,636 @@ PG_OPT_QUERIES = PG_NORMAL_QUERIES   # gleiche SQL-Syntax
 # - Die inhaltliche Reihenfolge/Anzahl ist identisch zu PG.
 # - Optimised-Variante nimmt die kürzeren Relationen (CONTAINS, REVIEWED …)
 #   – ansonsten exakt dieselbe Logik & Zählweise.
-NEO_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
+NEO_NORMAL_QUERIES = {
 
-    # ───────────── SIMPLE ─────────────
+    # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
-        "MATCH (p:Product) RETURN p LIMIT 10000;",
-        "MATCH (c:Category) RETURN c LIMIT 1000;",
-        "MATCH (u:User)-[:HAS_ADDRESS]->(a) RETURN a LIMIT 1;"
-    ],
-
-    # ───────────── MEDIUM ─────────────
-    Complexity.MEDIUM: [
-        # Produkte, die mindestens einer Kategorie zugeordnet sind
-        "MATCH (p:Product)-[:BELONGS_TO]->(:Category) RETURN p LIMIT 100;",
-
-        # Letzte Bestellung + Positionen
         """
-        MATCH (o:Order)<-[:PLACED]-(:User)
-        WITH o ORDER BY o.created_at DESC LIMIT 1
-        MATCH (o)-[:HAS_ITEM]->(oi:OrderItem)-[:REFERS_TO]->(p:Product)
-        RETURN p, oi.quantity;
+        MATCH (p:Product)
+        RETURN p.id         AS id,
+               p.name       AS name,
+               p.price      AS price,
+               p.stock      AS stock,
+               p.created_at AS created_at,
+               p.updated_at AS updated_at
+        ORDER BY id
+        LIMIT 10000;
         """,
 
-        # Neueste Reviews
         """
-        MATCH (r:Review)-[:REVIEWS]->(p:Product)
-        RETURN r ORDER BY r.created_at DESC LIMIT 5;
+        MATCH (c:Category)
+        RETURN c.id   AS id,
+               c.name AS name
+        ORDER BY id
+        LIMIT 1000;
+        """,
+
         """
+        MATCH (a:Address)
+        RETURN a.id         AS id,
+               a.user_id    AS user_id,
+               a.street     AS street,
+               a.city       AS city,
+               a.zip        AS zip,
+               a.country    AS country,
+               a.is_primary AS is_primary
+        ORDER BY id
+        LIMIT 25;
+        """,
     ],
 
-    # ───────────── COMPLEX ─────────────
+    # ───────── MEDIUM ─────────
+    Complexity.MEDIUM: [
+        # Produkte mit mindestens einer Kategorie
+        """
+        MATCH (p:Product)-[:BELONGS_TO]->(:Category)
+        WITH DISTINCT p
+        RETURN p.id         AS id,
+               p.name       AS name,
+               p.price      AS price,
+               p.stock      AS stock,
+               p.created_at AS created_at,
+               p.updated_at AS updated_at
+        ORDER BY id
+        LIMIT 100;
+        """,
+
+        # letzte 20 Bestellungen + Positionen
+        """
+        MATCH (o:Order)
+        WITH o ORDER BY o.created_at DESC, o.id DESC LIMIT 20
+        MATCH (o)-[:HAS_ITEM]->(oi:OrderItem)-[:REFERS_TO]->(p:Product)
+        RETURN 
+               p.id         AS id,
+               p.name       AS name,
+               p.price      AS price,
+               p.stock      AS stock,
+               p.created_at AS created_at,
+               p.updated_at AS updated_at,
+               oi.quantity  AS quantity
+        ORDER BY o.created_at DESC, o.id DESC, id
+        LIMIT 20;
+        """,
+
+        # fünf neueste Reviews (Knoten)
+        """
+        MATCH (r:Review)
+        RETURN r.id         AS id,
+               r.user_id    AS user_id,
+               r.product_id AS product_id,
+               r.rating     AS rating,
+               r.created_at AS created_at
+        ORDER BY created_at DESC, id DESC
+        LIMIT 5;
+        """,
+    ],
+
+    # ───────── COMPLEX ─────────
     Complexity.COMPLEX: [
-        # Summen pro Order
+        # Bestellsummen pro Order
         """
         MATCH (o:Order)-[:HAS_ITEM]->(oi:OrderItem)
-        WITH o, SUM(toInteger(oi.quantity)*toFloat(oi.price)) AS total
-        RETURN o.id AS orderId, o.created_at AS date, total LIMIT 50;
+        WITH o, SUM(oi.quantity * oi.price) AS total
+        RETURN o.id         AS id,
+               o.created_at AS created_at,
+               total        AS total
+        ORDER BY id
+        LIMIT 50;
         """,
 
         # Produkte mit Ø-Rating > 4
         """
         MATCH (p:Product)<-[:REVIEWS]-(r:Review)
-        WITH p, AVG(toFloat(r.rating)) AS avg_rating
+        WITH p, AVG(r.rating) AS avg_rating
         WHERE avg_rating > 4
-        RETURN p.id, p.name, avg_rating;
+        RETURN p.id        AS id,
+               p.name      AS name,
+               avg_rating  AS avg_rating
+        ORDER BY avg_rating DESC, id
+        LIMIT 200;
         """,
 
         # Bestellungen der letzten 30 Tage pro User
         """
         MATCH (u:User)-[:PLACED]->(o:Order)
-        WHERE o.created_at >= datetime() - duration({days:30})
-        WITH u, COUNT(o) AS cnt
-        RETURN u.id, cnt LIMIT 50;
-        """
+        WHERE datetime(o.created_at) >= datetime() - duration({days:30})
+        WITH u, COUNT(o) AS orders_last_30d
+        WHERE orders_last_30d > 0
+        RETURN u.id            AS id,
+               orders_last_30d AS orders_last_30d
+        ORDER BY id
+        LIMIT 50;
+        """,
     ],
 
-    # ───────────── VERY COMPLEX ─────────────
+    # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
-        # Cross-Sell auf Basis des meist­verkauften Produkts
+        # Cross-Sell basierend auf meistverkauftem Produkt
         """
-        // Top-Produkt bestimmen
         MATCH (:Order)-[:HAS_ITEM]->(oi1:OrderItem)
-        WITH oi1.product_id AS topProd, COUNT(*) AS freq
-        ORDER BY freq DESC LIMIT 1
-        // Käufer dieses Produkts
-        MATCH (u:User)-[:PLACED]->(o:Order)-[:HAS_ITEM]->(:OrderItem {product_id:topProd})
-        WITH DISTINCT u, topProd
-        // andere gekaufte Produkte
-        MATCH (u)-[:PLACED]->(o2:Order)-[:HAS_ITEM]->(oi2:OrderItem)
-        WHERE oi2.product_id <> topProd
-        RETURN oi2.product_id AS rec_id, COUNT(*) AS freq
-        ORDER BY freq DESC LIMIT 10;
+        WITH oi1.product_id AS prod , COUNT(*) AS freq
+        ORDER BY freq DESC , prod LIMIT 1 // tiebreak = product_id
+        WITH prod AS top_prod
+        MATCH (u:User)-[:PLACED]->(:Order)-[:HAS_ITEM]->(:OrderItem {product_id: top_prod})
+        WITH DISTINCT u , top_prod
+        MATCH (u)-[:PLACED]->(:Order)-[:HAS_ITEM]->(oi2:OrderItem)
+        WHERE oi2.product_id <> top_prod
+        RETURN oi2.product_id AS rec_id ,
+        COUNT(*) AS freq
+        ORDER BY freq DESC , rec_id
+        LIMIT 20;
         """,
 
-        # View + Purchase-Schnittmenge
+        # View ∩ Purchase
         """
         MATCH (u:User)-[:VIEWED]->(:ProductView)-[:VIEWED_PRODUCT]->(p:Product)
-        MATCH (u)-[:PLACED]->(:Order)-[:HAS_ITEM]->(:OrderItem)-[:REFERS_TO]->(p)
-        RETURN DISTINCT p.id, p.name LIMIT 25;
+        MATCH (u)-[:PLACED]->(:Order)-[:HAS_ITEM]->(:OrderItem {product_id: p.id})
+        RETURN DISTINCT p.id   AS id,
+                        p.name AS name
+        ORDER BY id
+        LIMIT 25;
         """,
 
-        # Zwei-Hop-Netz um oben­stehendes Top-Produkt
+
+        # Zwei-Hop-Netz um dasselbe Top-Produkt
         """
-        MATCH (:Order)-[:HAS_ITEM]->(oi1:OrderItem)
-        WITH oi1.product_id AS topProd, COUNT(*) AS freq
-        ORDER BY freq DESC LIMIT 1
-        MATCH (u:User)-[:PLACED]->(:Order)-[:HAS_ITEM]->(:OrderItem {product_id:topProd})
-        WITH DISTINCT u, topProd
+        MATCH (:Order)-[:HAS_ITEM]->(oi:OrderItem)
+        WITH oi.product_id AS prod , COUNT(*) AS freq
+        ORDER BY freq DESC , prod LIMIT 1
+        WITH prod AS top_prod
+        MATCH (u:User)-[:PLACED]->(:Order)-[:HAS_ITEM]->(:OrderItem {product_id: top_prod})
+        WITH DISTINCT u , top_prod
         MATCH (u)-[:PLACED]->(:Order)-[:HAS_ITEM]->(oi2:OrderItem)
-        WHERE oi2.product_id <> topProd
-        RETURN oi2.product_id AS prod_id, COUNT(*) AS freq
-        ORDER BY freq DESC LIMIT 20;
-        """
+        WHERE oi2.product_id <> top_prod
+        RETURN oi2.product_id AS product_id ,
+        COUNT(*) AS freq
+        ORDER BY freq DESC , product_id
+        LIMIT 20;
+        """,
     ],
 
-    # ───────────── CREATE ─────────────
+    # ───────── CREATE ─────────
     Complexity.CREATE: [
-        # Adresse
         """
-        MATCH (u:User) WITH u LIMIT 1
-        CREATE (u)-[:HAS_ADDRESS]->(:Address {
-            id: randomUUID(), street:'Foo', city:'Bar City',
-            zip:'12345', country:'DE', is_primary:false});
+        OPTIONAL MATCH (a:Address)
+        WITH coalesce(max(a.id),0)+1 AS new_id
+        MATCH (u:User) WITH u,new_id LIMIT 1
+        CREATE (u)-[:HAS_ADDRESS]->(a:Address {
+        id: new_id ,
+        street: 'Foo' ,
+        city: 'Bar City' ,
+        zip: '12345' ,
+        country: 'DE' ,
+        is_primary:false
+        })
+        RETURN a.id AS address_id;
         """,
 
-        # Order
         """
-        MATCH (u:User) WITH u LIMIT 1
-        CREATE (u)-[:PLACED]->(:Order {
-            status:'pending', total:0.0, created_at:datetime()});
+        OPTIONAL MATCH (o:Order)
+        WITH coalesce(max(o.id),0)+1 AS new_id
+        MATCH (u:User) WITH u,new_id LIMIT 1
+        CREATE (u)-[:PLACED]->(o:Order {
+        id: new_id ,
+        status:'pending' ,
+        total: 0.0 ,
+        created_at: datetime()
+        })
+        RETURN o.id AS order_id;
         """,
 
-        # Cart-Item
         """
-        MATCH (u:User) WITH u LIMIT 1
-        MATCH (p:Product) WITH u,p LIMIT 1
-        CREATE (u)-[:HAS_IN_CART {quantity:2, added_at:datetime()}]->(p);
+        OPTIONAL MATCH (ci:CartItem)
+        WITH coalesce(max(ci.id),0)+1 AS new_id
+        MATCH (u:User) WITH u,new_id LIMIT 1
+        MATCH (p:Product) WITH u,p,new_id LIMIT 1
+        CREATE (ci:CartItem {
+        id: new_id ,
+        user_id: u.id ,
+        product_id: p.id ,
+        quantity: 2 ,
+        added_at: datetime()
+        })
+        CREATE (u)-[:HAS_IN_CART]->(ci)
+        CREATE (ci)-[:CART_PRODUCT]->(p)
+        RETURN ci.id AS cart_item_id;
         """,
 
-        # Produkt-View
         """
-        MATCH (u:User) WITH u LIMIT 1
-        MATCH (p:Product) WITH u,p LIMIT 1
-        CREATE (u)-[:VIEWED]->(:ProductView {id:randomUUID(), viewed_at:datetime()})
-               -[:VIEWED_PRODUCT]->(p);
+        OPTIONAL MATCH (pv:ProductView)
+        WITH coalesce(max(pv.id),0)+1 AS new_id
+        MATCH (u:User) WITH u,new_id LIMIT 1
+        MATCH (p:Product) WITH u,p,new_id LIMIT 1
+        CREATE (pv:ProductView {
+        id: new_id ,
+        user_id: u.id ,
+        product_id: p.id ,
+        viewed_at: datetime()
+        })
+        CREATE (u)-[:VIEWED]->(pv)
+        CREATE (pv)-[:VIEWED_PRODUCT]->(p)
+        RETURN pv.id AS product_view_id;
         """
     ],
 
-    # ───────────── UPDATE ─────────────
+    # ───────── UPDATE ─────────
     Complexity.UPDATE: [
-        "MATCH (p:Product) WITH p LIMIT 1 SET p.stock = COALESCE(p.stock,0) + 1;",
-        "MATCH (r:Review)  WITH r LIMIT 1 SET r.rating = CASE WHEN r.rating > 1 THEN r.rating-1 ELSE r.rating END;",
-        "MATCH ()-[c:HAS_IN_CART]->() WITH c LIMIT 1 SET c.quantity = c.quantity + 3;",
-        "MATCH (u:User)    WITH u LIMIT 1 SET u.email = u.email + '.tmp';"
+        # 1) Lagerbestand +1  → node-id + neuer Stock
+        """
+        MATCH (p:Product)
+        WITH p ORDER BY p.id LIMIT 1
+        SET p.stock = coalesce(p.stock,0) + 1
+        RETURN p.id AS product_id,
+        p.stock AS new_stock;
+        """,
+
+        # 2) Rating −1 (min. 1)  → review_id + neues Rating
+        """
+        MATCH (r:Review) WITH r LIMIT 1
+        SET   r.rating = CASE
+                            WHEN toInteger(r.rating) > 1
+                            THEN toInteger(r.rating) - 1
+                            ELSE 1
+                        END
+        RETURN r.id     AS review_id,
+            r.rating AS new_rating;
+        """,
+
+        # 3) Cart-Menge +3  → cartItem-id + neue Quantity
+        """
+        MATCH (ci:CartItem)
+        WITH ci ORDER BY ci.id       /* deterministisch: kleinste id */
+        LIMIT 1
+        SET   ci.quantity = coalesce(toInteger(ci.quantity), 0) + 3
+        RETURN ci.id       AS cart_item_id,
+            ci.quantity AS new_quantity;
+        """,
+
+        # 4) E-Mail suffix  → user_id + neue Mail
+        """
+        MATCH (u:User) WITH u LIMIT 1
+        SET   u.email = u.email + '.tmp'
+        RETURN u.id   AS user_id,
+            u.email AS new_email;
+        """
     ],
 
-    # ───────────── DELETE ─────────────
+    # ───────── DELETE ─────────
     Complexity.DELETE: [
-        "MATCH (a:Address) WITH a LIMIT 1 DETACH DELETE a;",
-        "MATCH ()-[r:REVIEWS]-() WITH r LIMIT 1 DELETE r;",
-        "MATCH ()-[rel:HAS_IN_CART]-() WITH rel LIMIT 1 DELETE rel;",
-        "MATCH ()-[c:HAS_IN_CART]->() WITH c LIMIT 1 SET c.quantity = toInteger(c.quantity) + 3;"
-    ]
+        # 1) Adresse löschen  → gelöschte id
+        """
+        MATCH (a:Address)
+        WITH a ORDER BY a.id ASC
+        LIMIT 1
+        WITH a.id    AS deleted_address_id, a
+        DETACH DELETE a
+        RETURN deleted_address_id;
+        """,
+
+        # 2) Review-Knoten löschen
+        """
+        MATCH (r:Review)
+        WITH r ORDER BY r.id ASC
+        LIMIT 1
+        WITH r.id AS deleted_review_id, r
+        DETACH DELETE r
+        RETURN deleted_review_id;
+        """,
+
+        # 3) Cart-Item-Knoten löschen
+        """
+        MATCH (ci:CartItem)
+        WITH ci ORDER BY ci.id ASC
+        LIMIT 1
+        WITH ci.id AS deleted_cart_item_id, ci
+        DETACH DELETE ci
+        RETURN deleted_cart_item_id;
+        """,
+
+        # 4) Product-Purchase-Relationship löschen
+        """
+        MATCH (pp:ProductPurchase)
+        WITH pp ORDER BY pp.id ASC
+        LIMIT 1
+        WITH pp.id AS deleted_purchase_id, pp
+        DETACH DELETE pp
+        RETURN deleted_purchase_id;
+        """
+    ],
 }
 
 
 # --- Neo4j optimiert --------------------------------------------------------
-NEO_OPT_QUERIES: Dict[Complexity, List[str]] = {
+NEO_OPT_QUERIES = {
 
+    # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
-        "MATCH (p:Product) RETURN p LIMIT 10000;",
-        "MATCH (c:Category) RETURN c LIMIT 1000;",
-        "MATCH (u:User)-[:HAS_ADDRESS]->(a) RETURN a LIMIT 1;"
-    ],
-
-    Complexity.MEDIUM: [
-        "MATCH (p:Product)-[:BELONGS_TO]->(:Category) RETURN p LIMIT 100;",
-
         """
-        MATCH (o:Order)<-[:PLACED]-(:User)
-        WITH o ORDER BY o.created_at DESC LIMIT 1
-        MATCH (o)-[:CONTAINS]->(p:Product)
-        RETURN p, o;""",
-
-        "MATCH ()-[rev:REVIEWED]->(p:Product) RETURN rev ORDER BY rev.created_at DESC LIMIT 5;"
-    ],
-
-    Complexity.COMPLEX: [
-        """
-        MATCH (o:Order)-[:CONTAINS]->(p:Product)<-[rev:REVIEWED]-()
-        WITH o, SUM(rev.quantity * rev.price) AS total
-        RETURN o.id, o.created_at, total LIMIT 50;
+        MATCH (p:Product)
+        RETURN p.id         AS id,
+               p.name       AS name,
+               p.price      AS price,
+               p.stock      AS stock,
+               p.created_at AS created_at,
+               p.updated_at AS updated_at
+        ORDER BY id
+        LIMIT 10000;
         """,
 
+        # 2) Kategorien
+        """
+        MATCH (c:Category)
+        RETURN c.id   AS id,
+               c.name AS name
+        ORDER BY id
+        LIMIT 1000;
+        """,
+
+        # 3) Adressen
+        """
+        MATCH (a:Address)
+        RETURN a.id         AS id,
+               a.user_id    AS user_id,
+               a.street     AS street,
+               a.city       AS city,
+               a.zip        AS zip,
+               a.country    AS country,
+               a.is_primary AS is_primary
+        ORDER BY id
+        LIMIT 25;
+        """,
+    ],
+
+    # ───────── MEDIUM ─────────
+    Complexity.MEDIUM: [
+        # Produkte mit ≥ 1 Kategorie
+        """
+        MATCH (p:Product)-[:BELONGS_TO]->(:Category)
+        WITH DISTINCT p
+        RETURN p.id         AS id,
+               p.name       AS name,
+               p.price      AS price,
+               p.stock      AS stock,
+               p.created_at AS created_at,
+               p.updated_at AS updated_at
+        ORDER BY id
+        LIMIT 100;
+        """,
+
+        # 20 Positionen aus den letzten Bestellungen
+        """
+        MATCH (o:Order)
+        WITH o ORDER BY o.created_at DESC, o.id DESC LIMIT 20
+        MATCH (o)-[oi:CONTAINS]->(p:Product)
+        RETURN p.id         AS id,
+               p.name       AS name,
+               p.price      AS price,
+               p.stock      AS stock,
+               p.created_at AS created_at,
+               p.updated_at AS updated_at,
+               oi.quantity  AS quantity
+        ORDER BY o.created_at DESC, o.id DESC, id
+        LIMIT 20;
+        """,
+
+        # fünf neueste Reviews (Relationship-basiert)
+        """
+        MATCH (u:User)-[rev:REVIEWED]->(p:Product)
+        RETURN rev.id        AS id,
+               u.id          AS user_id,
+               p.id          AS product_id,
+               rev.rating    AS rating,
+               rev.created_at AS created_at
+        ORDER BY rev.created_at DESC, id DESC
+        LIMIT 5;
+        """,
+    ],
+
+    # ───────── COMPLEX ─────────
+    Complexity.COMPLEX: [
+        # Bestellsummen pro Bestellung
+        """
+        MATCH (o:Order)-[oi:CONTAINS]->(p:Product)
+        WITH o, SUM(toInteger(oi.quantity) * toFloat(oi.price)) AS total
+        RETURN o.id         AS id,
+               o.created_at AS created_at,
+               total        AS total
+        ORDER BY id
+        LIMIT 50;
+        """,
+
+        # Produkte mit Ø-Rating > 4
         """
         MATCH (p:Product)<-[rev:REVIEWED]-()
-        WITH p, AVG(rev.rating) AS avg_rating
+        WITH p, AVG(toFloat(rev.rating)) AS avg_rating
         WHERE avg_rating > 4
-        RETURN p.id, p.name, avg_rating;
+        RETURN p.id       AS id,
+               p.name     AS name,
+               avg_rating AS avg_rating
+        ORDER BY avg_rating DESC, id
+        LIMIT 200;
         """,
 
+        # Bestellungen der letzten 30 Tage pro User
         """
         MATCH (u:User)-[:PLACED]->(o:Order)
-        WHERE o.created_at >= datetime() - duration({days:30})
-        WITH u, COUNT(o) AS cnt
-        RETURN u.id, cnt LIMIT 50;
-        """
+        WHERE datetime(o.created_at) >= datetime() - duration({days:30})
+        WITH u, COUNT(o) AS orders_last_30d
+        RETURN u.id            AS id,
+               orders_last_30d AS orders_last_30d
+        ORDER BY id
+        LIMIT 50;
+        """,
     ],
 
+    # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
-        # Cross-Sell (CONTAINS)
+        # Cross-Sell (meistverkauftes Produkt → weitere Käufe)
         """
         MATCH (:Order)-[:CONTAINS]->(p1:Product)
-        WITH p1, COUNT(*) AS freq ORDER BY freq DESC LIMIT 1
+        WITH p1, COUNT(*) AS freq
+        ORDER BY freq DESC, p1.id
+        LIMIT 1                               // top product
+
         MATCH (u:User)-[:PLACED]->(:Order)-[:CONTAINS]->(p1)
-        WITH u, p1
+        WITH DISTINCT u, p1
         MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p2:Product)
         WHERE p2 <> p1
-        RETURN p2.id, p2.name, COUNT(*) AS freq
-        ORDER BY freq DESC LIMIT 10;
+        RETURN p2.id  AS rec_id,
+               COUNT(*) AS freq
+        ORDER BY freq DESC, rec_id
+        LIMIT 20;
         """,
 
-        # View + Purchase
+        # View ∩ Purchase
         """
-        MATCH (u:User)-[:VIEWED]->(:ProductView)-[:VIEWED_PRODUCT]->(p:Product)
+        MATCH (u:User)-[:VIEWED]->(p:Product)
         MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p)
-        RETURN DISTINCT p.id, p.name LIMIT 25;
+        RETURN DISTINCT p.id   AS id,
+                        p.name AS name
+        ORDER BY id
+        LIMIT 25;
         """,
 
-        # Zwei-Hop
+        # Zwei-Hop um Top-Produkt
         """
-        MATCH (:Order)-[:CONTAINS]->(p1:Product)
-        WITH p1, COUNT(*) AS freq ORDER BY freq DESC LIMIT 1
-        MATCH (u:User)-[:PLACED]->(:Order)-[:CONTAINS]->(p1)
-        WITH u, p1
+        MATCH (:Order)-[:CONTAINS]->(tp:Product)
+        WITH tp, COUNT(*) AS freq
+        ORDER BY freq DESC, tp.id
+        LIMIT 1
+
+        MATCH (u:User)-[:PLACED]->(:Order)-[:CONTAINS]->(tp)
+        WITH DISTINCT u, tp
         MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p2:Product)
-        WHERE p2 <> p1
-        RETURN p2.id, p2.name, COUNT(*) AS freq
-        ORDER BY freq DESC LIMIT 20;
-        """
+        WHERE p2 <> tp
+        RETURN p2.id  AS prod_id,
+               COUNT(*) AS freq
+        ORDER BY freq DESC, prod_id
+        LIMIT 20;
+        """,
     ],
 
-    # ───────────── CREATE ─────────────
+    # ───────── CREATE ─────────
     Complexity.CREATE: [
-        # Adresse
+        # 1) Adresse
         """
-        MATCH (u:User) WITH u LIMIT 1
-        CREATE (u)-[:HAS_ADDRESS]->(:Address {
-            id: randomUUID(), street:'Foo', city:'Bar City',
-            zip:'12345', country:'DE', is_primary:false});
+        OPTIONAL MATCH (a:Address)
+        WITH coalesce(max(a.id),0)+1 AS new_id
+        MATCH (u:User) WITH u,new_id LIMIT 1
+        CREATE (u)-[:HAS_ADDRESS]->(a:Address {
+            id:         new_id,
+            street:     'Foo',
+            city:       'Bar City',
+            zip:        '12345',
+            country:    'DE',
+            is_primary: false
+        })
+        RETURN a.id AS address_id;
         """,
 
-        # Order
+        # 2) Order
         """
-        MATCH (u:User) WITH u LIMIT 1
-        CREATE (u)-[:PLACED]->(:Order {
-            status:'pending', total:0.0, created_at:datetime()});
+        OPTIONAL MATCH (o:Order)
+        WITH coalesce(max(o.id),0)+1 AS new_id
+        MATCH (u:User) WITH u,new_id LIMIT 1
+        CREATE (u)-[:PLACED]->(o:Order {
+            id:         new_id,
+            status:     'pending',
+            total:      0.0,
+            created_at: datetime()
+        })
+        RETURN o.id AS order_id;
         """,
 
-        # Cart-Item
+        # 3) HAS_IN_CART-Relationship (mit eigener id)
         """
-        MATCH (u:User) WITH u LIMIT 1
-        MATCH (p:Product) WITH u,p LIMIT 1
-        CREATE (u)-[:HAS_IN_CART {quantity:2, added_at:datetime()}]->(p);
+        OPTIONAL MATCH ()-[c:HAS_IN_CART]-()
+        WITH coalesce(max(c.id),0)+1 AS new_id
+        MATCH (u:User) WITH u,new_id LIMIT 1
+        MATCH (p:Product) WITH u,p,new_id LIMIT 1
+        CREATE (u)-[c:HAS_IN_CART {
+            id:       new_id,
+            quantity: 2,
+            added_at: datetime()
+        }]->(p)
+        RETURN c.id AS cart_rel_id;
         """,
 
-        # Produkt-View
+        # 4) VIEWED-Relationship (mit eigener id)
         """
-        MATCH (u:User) WITH u LIMIT 1
-        MATCH (p:Product) WITH u,p LIMIT 1
-        CREATE (u)-[:VIEWED]->(:ProductView {id:randomUUID(), viewed_at:datetime()})
-               -[:VIEWED_PRODUCT]->(p);
+        OPTIONAL MATCH ()-[v:VIEWED]-()
+        WITH coalesce(max(v.id),0)+1 AS new_id
+        MATCH (u:User) WITH u,new_id LIMIT 1
+        MATCH (p:Product) WITH u,p,new_id LIMIT 1
+        CREATE (u)-[v:VIEWED {
+            id:        new_id,
+            viewed_at: datetime()
+        }]->(p)
+        RETURN v.id AS view_rel_id;
         """
     ],
 
-    # ───────────── UPDATE ─────────────
+    # ───────── UPDATE ─────────
     Complexity.UPDATE: [
-        "MATCH (p:Product) WITH p LIMIT 1 SET p.stock = COALESCE(p.stock,0) + 1;",
-        "MATCH (r:Review)  WITH r LIMIT 1 SET r.rating = CASE WHEN r.rating > 1 THEN r.rating-1 ELSE r.rating END;",
-        "MATCH ()-[c:HAS_IN_CART]->() WITH c LIMIT 1 SET c.quantity = c.quantity + 3;",
-        "MATCH (u:User)    WITH u LIMIT 1 SET u.email = u.email + '.tmp';"
+        # 1) Stock +1
+        """
+        MATCH (p:Product) WITH p ORDER BY p.id LIMIT 1
+        SET   p.stock = coalesce(p.stock,0) + 1
+        RETURN p.id   AS product_id,
+               p.stock AS new_stock;
+        """,
+
+        # 2) Rating −1 (Relationship)
+        """
+        MATCH ()-[rev:REVIEWED]-()
+        WITH  rev ORDER BY rev.id LIMIT 1
+        SET   rev.rating = CASE
+                             WHEN toInteger(rev.rating) > 1
+                             THEN toInteger(rev.rating) - 1
+                             ELSE 1
+                           END
+        RETURN rev.id     AS review_rel_id,
+               rev.rating AS new_rating;
+        """,
+
+        # 3) Cart-Menge +3
+        """
+        MATCH ()-[c:HAS_IN_CART]-()
+        WITH  c ORDER BY c.id LIMIT 1
+        SET   c.quantity = coalesce(toInteger(c.quantity),0) + 3
+        RETURN c.id       AS cart_rel_id,
+               c.quantity AS new_quantity;
+        """,
+
+        # 4) E-Mail-Suffix
+        """
+        MATCH (u:User) WITH u LIMIT 1
+        SET   u.email = u.email + '.tmp'
+        RETURN u.id   AS user_id,
+               u.email AS new_email;
+        """
     ],
 
-    # ───────────── DELETE ─────────────
+    # ───────── DELETE ─────────
     Complexity.DELETE: [
-        "MATCH (a:Address) WITH a LIMIT 1 DETACH DELETE a;",
-        "MATCH ()-[r:REVIEWED]-() WITH r LIMIT 1 DELETE r;",
-        "MATCH ()-[c:HAS_IN_CART]-() WITH c LIMIT 1 DELETE c;",
-        "MATCH ()-[p:PURCHASED]-() WITH p LIMIT 1 DELETE p;"
-    ]
+        # 1) Adresse-Knoten
+        """
+        MATCH (a:Address)
+        WITH  a ORDER BY a.id LIMIT 1
+        WITH  a.id AS deleted_address_id, a
+        DETACH DELETE a
+        RETURN deleted_address_id;
+        """,
+
+        # 2) REVIEWED-Relationship
+        """
+        MATCH ()-[rev:REVIEWED]-()
+        WITH  rev ORDER BY rev.id LIMIT 1
+        WITH  rev.id AS deleted_review_rel_id, rev
+        DELETE rev
+        RETURN deleted_review_rel_id;
+        """,
+
+        # 3) HAS_IN_CART-Relationship
+        """
+        MATCH ()-[c:HAS_IN_CART]-()
+        WHERE c.id IS NOT NULL
+        WITH  c ORDER BY c.id LIMIT 1
+        WITH  c.id AS deleted_cart_rel_id, c
+        DELETE c
+        RETURN deleted_cart_rel_id;
+        """,
+
+        # 4) PURCHASED-Relationship
+        """
+        MATCH ()-[pur:PURCHASED]-()
+        WHERE pur.id IS NOT NULL
+        WITH  pur ORDER BY pur.id LIMIT 1
+        WITH  pur.id AS deleted_purchase_rel_id, pur
+        DELETE pur
+        RETURN deleted_purchase_rel_id;
+        """
+    ],
 }
 
 

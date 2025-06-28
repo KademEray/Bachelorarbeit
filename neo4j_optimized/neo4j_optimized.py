@@ -8,12 +8,12 @@ IMAGE_NAME = "neo5-optimized"
 CONTAINER_NAME = "neo5_test_optimized"
 NEO4J_HTTP_PORT = 7474
 NEO4J_BOLT_PORT = 7687
-DOCKERFILE_DIR = Path("./neo4j_optimized")  # Hier liegt dein Dockerfile
-cypher_file = Path("./neo4j_optimized/setup_neo4j_optimized.cypher")
+DOCKERFILE_DIR = Path("./")  # Hier liegt dein Dockerfile
+cypher_file = Path("./setup_neo4j_optimized.cypher")
 
 # ----------------------------- Funktionen
 
-def build_optimized_neo4j_image():
+def build_optimized_neo4j_image(DOCKERFILE_DIR: Path = DOCKERFILE_DIR):
     """Baut das Docker-Image aus dem Dockerfile."""
     print(f"🛠 Baue Image '{IMAGE_NAME}' aus {DOCKERFILE_DIR} ...")
     subprocess.run([
@@ -38,7 +38,7 @@ def start_optimized_neo4j_container():
     print("✅ Container läuft.")
 
 
-def apply_optimized_cypher_structure():
+def apply_optimized_cypher_structure(cypher_file: Path = cypher_file):
     print("📡 Verbinde mit Neo4j über Bolt...")
 
     for attempt in range(10):  # 10 Versuche, 3 Sekunden Abstand = max 30 Sekunden

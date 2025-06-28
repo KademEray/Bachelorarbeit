@@ -22,55 +22,46 @@ IMAGE_NAME = "neo5-optimized"
 # === Tabellenstruktur für Optimized ===
 NODE_TABLES = {
     "users": [
-        "id:ID(User)",
-        "name",
-        "email",
+        "user_id:ID(User)",          # ⇢ Import-ID
+        "id:int",                    # ⇢ fachliche ID
+        "name", "email",
         "created_at:datetime"
     ],
     "products": [
-        "id:ID(Product)",
-        "name",
-        "description",
-        "price:float",
-        "stock:int",
-        "created_at:datetime",
-        "updated_at:datetime"
+        "product_id:ID(Product)",
+        "id:int",
+        "name", "description",
+        "price:float", "stock:int",
+        "created_at:datetime", "updated_at:datetime"
     ],
     "categories": [
-        "id:ID(Category)",
+        "category_id:ID(Category)",
+        "id:int",
         "name"
     ],
     "addresses": [
-        "id:ID(Address)",
-        "user_id:int",
-        "street",
-        "city",
-        "zip",
-        "country",
+        "address_id:ID(Address)",
+        "id:int",
+        "user_id:int", "street", "city", "zip", "country",
         "is_primary:boolean"
     ],
     "orders": [
-        "id:ID(Order)",
-        "user_id:int",
-        "status",
-        "total:float",
-        "created_at:datetime",
-        "updated_at:datetime"
+        "order_id:ID(Order)",
+        "id:int",
+        "user_id:int", "status",
+        "total:float", "created_at:datetime", "updated_at:datetime"
     ],
     "payments": [
-        "id:ID(Payment)",
-        "order_id:int",
-        "payment_method",
-        "payment_status",
-        "paid_at:datetime"
+        "payment_id:ID(Payment)",
+        "id:int",
+        "order_id:int", "payment_method",
+        "payment_status", "paid_at:datetime"
     ],
     "shipments": [
-        "id:ID(Shipment)",
-        "order_id:int",
-        "tracking_number",
-        "shipped_at:datetime",
-        "delivered_at:datetime",
-        "carrier"
+        "shipment_id:ID(Shipment)",
+        "id:int",
+        "order_id:int", "tracking_number",
+        "shipped_at:datetime", "delivered_at:datetime", "carrier"
     ]
 }
 
@@ -85,9 +76,10 @@ NODE_TYPES = {
     "shipments":   "Shipment",
 }
 
-# === Relationship-Builder für direct Relationships ===
+# === Relationship-Builder (neo_opt)  ======================================
 RELATION_BUILDERS = {
-    "user_address": lambda row: {
+    # ───────── 1) Direkt aus Knoten stammende Links ─────────
+    "user_address": lambda row: {                 # ↔ Address-Knoten hat schon ID
         "user_id:START_ID(User)":     row["user_id"],
         "address_id:END_ID(Address)": row["id"],
         ":TYPE":                      "HAS_ADDRESS"
@@ -103,52 +95,65 @@ RELATION_BUILDERS = {
         ":TYPE":                      "PAID_WITH"
     },
     "order_shipment": lambda row: {
-        "order_id:START_ID(Order)":    row["order_id"],
+        "order_id:START_ID(Order)":     row["order_id"],
         "shipment_id:END_ID(Shipment)": row["id"],
-        ":TYPE":                       "SHIPPED"
+        ":TYPE":                        "SHIPPED"
     },
+
+    # ───────── 2) Wishlist (hat keine eigene ID im JSON) ─────────
     "user_wishlist": lambda row: {
-    "user_id:START_ID(User)":   row["user_id"],
-    "product_id:END_ID(Product)": row["product_id"],
-    # fehlt der Key → None  ⇒  Property wird einfach weggelassen
-    "created_at:datetime":      row.get("created_at"),
-    ":TYPE":                    "WISHLISTED"
-    },
-    "order_contains": lambda row: {
-        "order_id:START_ID(Order)":   row["order_id"],
+        "user_id:START_ID(User)":     row["user_id"],
         "product_id:END_ID(Product)": row["product_id"],
-        "quantity:int":               row["quantity"],
-        "price:float":                row["price"],
-        ":TYPE":                      "CONTAINS"
+        "created_at:datetime":        row.get("created_at"),
+        ":TYPE":                      "WISHLISTED"
     },
+
+    # ───────── 3) Ehemalige Join-Knoten  →  Relationship mit ID ─────────
+    "order_contains": lambda row: {              
+        "id:int":                    row["id"],  #  ← **neue ID-Property**
+        "order_id:START_ID(Order)":  row["order_id"],
+        "product_id:END_ID(Product)":row["product_id"],
+        "quantity:int":              row["quantity"],
+        "price:float":               row["price"],
+        ":TYPE":                     "CONTAINS"
+    },
+
     "user_reviewed": lambda row: {
-        "user_id:START_ID(User)":     row["user_id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        "rating:int":                 row["rating"],
-        "comment":                    row["comment"],
-        "created_at:datetime":        row["created_at"],
-        ":TYPE":                      "REVIEWED"
+        "id:int":                    row["id"],
+        "user_id:START_ID(User)":    row["user_id"],
+        "product_id:END_ID(Product)":row["product_id"],
+        "rating:int":                row["rating"],
+        "comment":                   row["comment"],
+        "created_at:datetime":       row["created_at"],
+        ":TYPE":                     "REVIEWED"
     },
+
     "user_cart": lambda row: {
-        "user_id:START_ID(User)":     row["user_id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        "quantity:int":               row["quantity"],
-        "added_at:datetime":          row["added_at"],
-        ":TYPE":                      "HAS_IN_CART"
+        "id:int":                    row["id"],
+        "user_id:START_ID(User)":    row["user_id"],
+        "product_id:END_ID(Product)":row["product_id"],
+        "quantity:int":              row["quantity"],
+        "added_at:datetime":         row["added_at"],
+        ":TYPE":                     "HAS_IN_CART"
     },
+
     "user_viewed": lambda row: {
-        "user_id:START_ID(User)":     row["user_id"],
-        "product_id:END_ID(Product)": row["product_id"],
-        "viewed_at:datetime":         row["viewed_at"],
-        ":TYPE":                      "VIEWED"
+        "id:int":                    row["id"],
+        "user_id:START_ID(User)":    row["user_id"],
+        "product_id:END_ID(Product)":row["product_id"],
+        "viewed_at:datetime":        row["viewed_at"],
+        ":TYPE":                     "VIEWED"
     },
+
     "user_purchased": lambda row: {
-        "user_id:START_ID(User)":       row["user_id"],
-        "product_id:END_ID(Product)":   row["product_id"],
-        "purchased_at:datetime":        row["purchased_at"],
-        ":TYPE":                        "PURCHASED"
+        "id:int":                    row["id"],
+        "user_id:START_ID(User)":    row["user_id"],
+        "product_id:END_ID(Product)":row["product_id"],
+        "purchased_at:datetime":     row["purchased_at"],
+        ":TYPE":                     "PURCHASED"
     },
 }
+
 
 # === Aus welcher Tabelle je Relationship speisen ===
 RELATION_TABLE_SOURCES = {
@@ -198,52 +203,72 @@ def fix_cypher_props(text):
     return text
 
 def convert_json_to_csv_refactored(json_file: Path, out_dir: Path):
-    with open(json_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    """Schreibt für jedes Node-CSV sowohl Import-ID als auch fachliche ID."""
 
+    data = json.loads(Path(json_file).read_text(encoding="utf-8"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # === Nodes exportieren ===
-    for table, label in NODE_TYPES.items():
+    # ---------- Nodes ------------------------------------------------------
+    for table, header in NODE_TABLES.items():
         rows = data.get(table, [])
         if not rows:
             continue
-        with open(out_dir / f"{table}.csv", "w", encoding="utf-8", newline="") as f_out:
-            fieldnames = list(rows[0].keys())
-            # Ersetze das erste Feld (angenommen: ID-Feld) mit :ID(Label)
-            header_line = [f"{fieldnames[0]}:ID({label})"] + fieldnames[1:]
+
+        # ➊ Map: Spalten­name  → Typangabe ('' | 'boolean' | 'int' …)
+        type_by_key = {
+            h.split(":")[0]: (h.split(":")[1] if ":" in h else "")
+            for h in header
+        }
+
+        csv_path = out_dir / f"{table}.csv"
+        with csv_path.open("w", newline="", encoding="utf-8") as f_out:
             writer = csv.writer(f_out)
-            writer.writerow(header_line)
+            writer.writerow(header)
+
+            def resolve_value(row, key):
+                # A) Wert existiert im JSON    → direkt nehmen
+                if key in row:
+                    val = row[key]
+                # B) Import-ID Spalte (…_id)   → fachliche id übernehmen
+                elif key.endswith("_id") and "id" in row:
+                    val = row["id"]
+                # C) sonst                    → None (= fehlend)
+                else:
+                    val = None
+
+                # ➋ Typ-spezifische Aufbereitung
+                col_type = type_by_key.get(key, "")
+                if col_type == "boolean":
+                    # fehlender Wert      → false
+                    # Python-Bool         → Literal in Kleinbuchstaben
+                    return "true" if bool(val) else "false"
+                if val is None:
+                    return ""            # alle anderen Typen: leer lassen
+                return val
+
             for row in rows:
-                writer.writerow([row.get(k) for k in fieldnames])
+                writer.writerow([resolve_value(row, k.split(":")[0])
+                                for k in header])
 
-    # === Relationships vorbereiten ===
+    # ---------- Relationships ---------------------------------------------
+    # (bleibt exakt wie zuvor)
     rel_rows = {}
-
-    # Nur Beziehungen erzeugen, wenn die Quelltabelle existiert
     for rel, source_table in RELATION_TABLE_SOURCES.items():
         if source_table not in data:
             continue
         rows = data[source_table]
         builder = RELATION_BUILDERS[rel]
-        rel_rows[rel] = []
-        for row in rows:
-            try:
-                rel_row = builder(row)
-                rel_rows[rel].append(rel_row)
-            except KeyError:
-                continue
+        rel_rows[rel] = [builder(r) for r in rows]
 
-    # === Relationships exportieren ===
     for rel, rows in rel_rows.items():
         if not rows:
             continue
-        with open(out_dir / f"{rel}.csv", "w", encoding="utf-8", newline="") as f_out:
+        with open(out_dir / f"{rel}.csv", "w", newline="", encoding="utf-8") as f_out:
             writer = csv.DictWriter(f_out, fieldnames=rows[0].keys())
             writer.writeheader()
             writer.writerows(rows)
 
-    return sorted(list(out_dir.glob("*.csv")))
+    return sorted(out_dir.glob("*.csv"))
 
 def wait_for_bolt(uri="bolt://127.0.0.1:7687", auth=("neo4j","superpassword55"),
                   timeout=120, delay=2):

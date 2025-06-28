@@ -13,7 +13,8 @@ PAY_METHODS = ["card", "paypal", "invoice"]
 CARRIERS = ["DHL", "Hermes", "DPD", "GLS"]
 
 faker = Faker("de_DE")
-
+used_emails: set[str] = set()
+wishlist_pairs: set[tuple[int,int]] = set()
 
 def random_date_this_year():
     now = datetime.now()
@@ -99,9 +100,17 @@ def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir
     # ID-Counter initialisieren
     addr_id = order_id = item_id = pay_id = ship_id = rev_id = cart_id = view_id = pur_id = 1
 
+    def unique_email() -> str:
+        """Erzeuge garantiert noch nicht verwendete Faker-E-Mail."""
+        email = faker.email()
+        while email in used_emails:
+            email = faker.email()
+        used_emails.add(email)
+        return email
+
     for uid in tqdm(range(1, num_users + 1), desc="Generiere Nutzer"):
         stream_write(stream_files["users"], {
-            "id": uid, "name": faker.name(), "email": faker.email(),
+            "id": uid, "name": faker.name(), "email": unique_email(),
             "created_at": random_date_this_year()
         })
 
@@ -194,9 +203,22 @@ def build_dataset(num_users: int, data_dir: Path | str = "product_data", out_dir
             })
             cart_id += 1
 
-        for prod in random.sample(products, k=random.randint(1, 5)):
+        max_wishes = random.randint(1, 5)
+        attempts   = 0
+        wishes     = 0                       # ← neuer Zähler
+
+        while wishes < max_wishes and attempts < 3 * max_wishes:
+            prod = random.choice(products)
+            key  = (uid, prod["id"])
+            attempts += 1
+            if key in wishlist_pairs:
+                continue                     # Duplikat – neuer Versuch
+            wishlist_pairs.add(key)
+            wishes += 1                      # ← gezielt hochzählen
+
             stream_write(stream_files["wishlists"], {
-                "user_id": uid, "product_id": prod["id"],
+                "user_id":   uid,
+                "product_id": prod["id"],
                 "created_at": random_date_this_year()
             })
 
