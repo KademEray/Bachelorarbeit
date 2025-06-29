@@ -4,11 +4,8 @@ import csv               # Für das Schreiben von CSV-Dateien (z. B. für den 
 import subprocess        # Zur Ausführung externer Shell-Kommandos (z. B. Docker)
 import time              # Zur Steuerung von Pausen und Wartezeiten
 from pathlib import Path # Plattformunabhängiges Arbeiten mit Dateipfaden
-from tqdm import tqdm    # Fortschrittsbalken für lange Operationen (z. B. Dateioperationen)
-import ast               # Abstrakter Syntaxbaum – hier ggf. für sichere Auswertung von Literal-Ausdrücken
 import re                # Reguläre Ausdrücke, z. B. für Datenbereinigung
 import shutil            # Dateisystemoperationen (z. B. Ordner löschen)
-import socket            # Für Netzwerkprüfungen (z. B. ob Bolt-Port erreichbar ist)
 
 from neo4j import GraphDatabase                    # Offizieller Python-Treiber für Neo4j (Bolt-Verbindung)
 from neo4j.exceptions import ServiceUnavailable    # Fehlerbehandlung bei nicht erreichbarem Neo4j-Service
@@ -203,150 +200,139 @@ RELATION_TABLE_SOURCES = {
 
 
 def stop_neo4j_container():
-    """
-    Stoppt den laufenden Docker-Container für Neo4j (falls aktiv).
-    Wartet anschließend auf die vollständige Entfernung aus dem System.
-    """
+    # Gibt eine Statusmeldung aus, dass versucht wird, den Container zu stoppen.
     print("🛑 Stoppe laufenden Neo4j-Container falls aktiv ...")
     try:
-        subprocess.run(
-            ["docker", "stop", CONTAINER_NAME],
-            check=True,
-            stdout=subprocess.DEVNULL
-        )
+        # Führt den Docker-Befehl zum Stoppen des Containers aus.
+        # Der Befehl gibt keine Ausgabe zurück, da stdout unterdrückt wird.
+        subprocess.run(["docker", "stop", CONTAINER_NAME], check=True, stdout=subprocess.DEVNULL)
+
+        # Wiederholt bis zu 10 Mal (mit jeweils 1 Sekunde Pause), ob der Container vollständig beendet wurde.
         for _ in range(10):
+            # Prüft, ob ein Container mit dem angegebenen Namen noch vorhanden ist.
             result = subprocess.run(
                 ["docker", "ps", "-a", "-q", "-f", f"name={CONTAINER_NAME}"],
-                capture_output=True, text=True
+                capture_output=True,
+                text=True
             )
+            # Wenn keine Container-ID zurückgegeben wird, wurde der Container erfolgreich gestoppt.
             if not result.stdout.strip():
                 print("✅ Container wurde vollständig gestoppt.")
                 return
-            time.sleep(1)
+            time.sleep(1)  # Wartezeit vor dem nächsten Versuch
+
     except Exception as e:
+        # Gibt eine Fehlermeldung aus, falls beim Stoppen des Containers ein Problem auftritt.
         print(f"⚠️  Fehler beim Stoppen: {e}")
 
 
 def start_neo4j_container():
-    """
-    Startet den optimierten Neo4j-Container im Docker.
-    - Mountet ein lokales Volume unter ./neo4j_data nach /data im Container (für persistente Datenhaltung).
-    - Setzt Standard-Ports für HTTP (7474) und Bolt (7687).
-    - Verwendet die Umgebungsvariable zur Authentifizierung.
-    - Wartet nach dem Start auf Erreichbarkeit des Bolt-Endpunkts.
-    """
+    # Gibt eine Statusmeldung aus, dass der Neo4j-Container gestartet wird.
     print("🚀 Starte Neo4j-Container neu ...")
 
-    # Absoluter Pfad zum lokalen Datenverzeichnis für /data-Mount
+    # Ermittelt den absoluten Pfad zum lokalen Verzeichnis 'neo4j_data', 
+    # in dem die persistente Datenhaltung erfolgen soll.
     data_volume_path = str((Path(__file__).resolve().parent / "neo4j_data").resolve())
 
-    # Docker-Container starten
+    # Startet einen neuen Docker-Container mit den folgenden Parametern:
+    # -d: im Hintergrund (detached mode)
+    # --rm: Container wird nach dem Stoppen automatisch gelöscht
+    # --name: setzt einen festen Containernamen
+    # -e: übergibt die Authentifizierungsdaten als Umgebungsvariable
+    # -p: leitet Ports für HTTP (7474) und Bolt (7687) weiter
+    # -v: bindet das Datenverzeichnis als Volume ein
+    # IMAGE_NAME: definiertes Neo4j-Image
     subprocess.run([
         "docker", "run", "-d", "--rm",
         "--name", CONTAINER_NAME,
-        "-e", "NEO4J_AUTH=neo4j/superpassword55",  # Zugangsdaten
-        "-p", "7474:7474", "-p", "7687:7687",       # Ports veröffentlichen
-        "-v", f"{data_volume_path}:/data",          # Datenverzeichnis mounten
+        "-e", "NEO4J_AUTH=neo4j/superpassword55",
+        "-p", "7474:7474", "-p", "7687:7687",
+        "-v", f"{data_volume_path}:/data",
         IMAGE_NAME
     ], check=True)
 
-    # Auf Erreichbarkeit des Neo4j-Bolt-Protokolls warten
+    # Wartet darauf, dass der Bolt-Endpunkt (Standardprotokoll von Neo4j) erreichbar ist.
     wait_for_bolt()
+
+    # Gibt eine Erfolgsmeldung aus, sobald der Container aktiv ist.
     print("✅ Container läuft.")
 
 
 def fix_cypher_props(text):
-    """
-    Hilfsfunktion zur Formatkorrektur von Property-Zuweisungen in Cypher-Zeilen (Text-Ebene).
-    - Wandelt z. B. name:Max → "name":"Max" um, um gültige JSON/Cypher-Syntax zu gewährleisten.
-    - Wichtig für dynamisch erzeugte CSV-Dateien mit Properties in Neo4j-Importen.
-    """
-    # Erster Schritt: Schlüssel in Anführungszeichen setzen → z.B. name: → "name":
+    # Sucht nach Schlüsselbezeichnern in Cypher-Notation (z. B. name: ...) 
+    # und wandelt diese in gültige JSON-Schlüssel um (z. B. "name": ...).
     text = re.sub(r"(\w+):", r'"\1":', text)
 
-    # Zweiter Schritt: unquoted Werte in Anführungszeichen setzen → z.B. :abc → : "abc"
+    # Sucht nach nicht in Anführungszeichen gesetzten String-Werten in Eigenschaftszuweisungen
+    # (z. B. : admin) und ergänzt automatisch doppelte Anführungszeichen (→ : "admin").
     text = re.sub(r':\s*([A-Za-z_][A-Za-z0-9_]*)', r': "\1"', text)
 
+    # Gibt den bereinigten Text zurück, der nun syntaktisch korrekt ist für JSON oder Cypher-Mapping.
     return text
 
 
 def convert_json_to_csv_refactored(json_file: Path, out_dir: Path):
-    """
-    Konvertiert eine strukturierte JSON-Datei in CSV-Dateien für den Neo4j-Import.
+    """Konvertiert ein gegebenes JSON-Datenobjekt in CSV-Dateien für Knoten und Relationen gemäß der vorgegebenen Tabellenstruktur."""
 
-    - Jeder JSON-Abschnitt (z. B. 'users', 'orders') wird basierend auf der NODE_TABLES-Definition
-      in eine eigene CSV-Datei umgewandelt.
-    - Sowohl die technische Import-ID (z. B. user_id:ID(User)) als auch die fachliche ID (id:int)
-      werden berücksichtigt.
-    - Felder mit booleschen Werten werden korrekt in "true"/"false" übersetzt.
-    - Beziehungen (z. B. :PLACED, :HAS_ADDRESS) werden mithilfe vordefinierter Builder generiert
-      und in separate CSV-Dateien geschrieben.
-
-    Parameter:
-    ----------
-    json_file : Path
-        Pfad zur JSON-Datei mit den exportierten Daten.
-    out_dir : Path
-        Zielverzeichnis für die generierten CSV-Dateien.
-
-    Rückgabe:
-    ---------
-    List[Path]
-        Alphabetisch sortierte Liste aller erzeugten CSV-Dateien.
-    """
-
+    # Lädt die JSON-Datei und stellt sicher, dass das Ausgabeverzeichnis existiert
     data = json.loads(Path(json_file).read_text(encoding="utf-8"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------- Verarbeitung der Knoten-Tabellen -------------------
+    # --------------------- Verarbeitung der Knoten-Tabellen ---------------------
     for table, header in NODE_TABLES.items():
         rows = data.get(table, [])
         if not rows:
-            continue
+            continue  # Tabelle ist im JSON nicht vorhanden oder leer
 
-        # Zuordnung der Spaltennamen zu ihren Typangaben (z. B. int, boolean)
+        # ➊ Erstellt eine Zuordnung zwischen Attributnamen und deren Typdefinitionen (z. B. 'boolean', 'int', '')
         type_by_key = {
             h.split(":")[0]: (h.split(":")[1] if ":" in h else "")
             for h in header
         }
 
+        # Legt den Pfad zur Ausgabedatei fest und öffnet sie im Schreibmodus
         csv_path = out_dir / f"{table}.csv"
         with csv_path.open("w", newline="", encoding="utf-8") as f_out:
             writer = csv.writer(f_out)
-            writer.writerow(header)
+            writer.writerow(header)  # schreibt die Kopfzeile mit Typdefinitionen
 
             def resolve_value(row, key):
-                # A) Wert im JSON vorhanden → direkt übernehmen
+                # A) Direkter Zugriff: Wert ist im Datensatz vorhanden
                 if key in row:
                     val = row[key]
-                # B) Import-ID-Spalte vorhanden → setze auf fachliche ID
+                # B) Falls nur eine generische 'id' existiert, wird diese für Import-ID-Felder übernommen
                 elif key.endswith("_id") and "id" in row:
                     val = row["id"]
+                # C) Andernfalls wird der Wert als fehlend markiert
                 else:
-                    val = None  # fehlender Wert
+                    val = None
 
-                # Typ-spezifische Formatierung
+                # ➋ Typabhängige Umwandlung der Werte
                 col_type = type_by_key.get(key, "")
                 if col_type == "boolean":
+                    # Fehlende Werte werden als 'false' interpretiert,
+                    # vorhandene Booleans als lowercase-String zurückgegeben
                     return "true" if bool(val) else "false"
                 if val is None:
-                    return ""
-                return val
+                    return ""  # fehlende Werte (nicht-boolean) werden als leere Zelle geschrieben
+                return val  # alle anderen Typen: unbearbeitet zurückgeben
 
-            # Zeilenweise schreiben
+            # Schreibt die aufbereiteten Datenzeilen in die CSV-Datei
             for row in rows:
                 writer.writerow([resolve_value(row, k.split(":")[0])
                                  for k in header])
 
-    # ------------------- Verarbeitung der Beziehungen -----------------------
+    # --------------------- Verarbeitung der Relationen-Tabellen ---------------------
+    # Baut zunächst eine Zwischenstruktur auf, um Beziehungen zu generieren
     rel_rows = {}
     for rel, source_table in RELATION_TABLE_SOURCES.items():
         if source_table not in data:
-            continue
+            continue  # Quelltabelle fehlt → keine Beziehungen erzeugbar
         rows = data[source_table]
-        builder = RELATION_BUILDERS[rel]
+        builder = RELATION_BUILDERS[rel]  # verwendet vordefinierte Builder-Funktion
         rel_rows[rel] = [builder(r) for r in rows]
 
+    # Schreibt die Beziehungsdaten in separate CSV-Dateien
     for rel, rows in rel_rows.items():
         if not rows:
             continue
@@ -355,113 +341,66 @@ def convert_json_to_csv_refactored(json_file: Path, out_dir: Path):
             writer.writeheader()
             writer.writerows(rows)
 
-    # Rückgabe der generierten CSV-Dateien
+    # Gibt alle erstellten CSV-Dateien als Liste zurück
     return sorted(out_dir.glob("*.csv"))
 
 
-def wait_for_bolt(uri="bolt://127.0.0.1:7687", auth=("neo4j", "superpassword55"),
+def wait_for_bolt(uri="bolt://127.0.0.1:7687", auth=("neo4j","superpassword55"),
                   timeout=120, delay=2):
     """
-    Wartet auf die Verfügbarkeit der Neo4j-Bolt-Schnittstelle.
-
-    Diese Funktion versucht wiederholt, eine Verbindung zur Bolt-API des Neo4j-Datenbankservers
-    herzustellen. Sie wird typischerweise nach dem Start eines Docker-Containers verwendet, um
-    sicherzustellen, dass der Dienst vollständig initialisiert wurde, bevor weitere Operationen
-    wie das Ausführen von Cypher-Skripten beginnen.
+    Wartet auf die erfolgreiche Erreichbarkeit des Neo4j-Bolt-Endpunkts.
 
     Parameter:
-    ----------
-    uri : str
-        Bolt-URL, unter der Neo4j erreichbar sein soll (Standard: "bolt://127.0.0.1:7687").
-
-    auth : Tuple[str, str]
-        Zugangsdaten (Benutzername, Passwort) zur Authentifizierung bei Neo4j.
-
-    timeout : int
-        Maximale Wartezeit in Sekunden, bevor ein Fehler ausgelöst wird (Standard: 120 s).
-
-    delay : int
-        Wartezeit in Sekunden zwischen zwei Verbindungsversuchen (Standard: 2 s).
-
-    Raises:
-    -------
-    RuntimeError
-        Wenn die Datenbank nach Ablauf des Timeouts nicht erreichbar ist.
-
-    Beispiel:
-    ---------
-    wait_for_bolt()  # wartet maximal 2 Minuten, bis Neo4j verfügbar ist
+        uri (str): Bolt-Verbindungs-URI (Standard: localhost mit Port 7687)
+        auth (tuple): Tuple aus Benutzername und Passwort für den Login
+        timeout (int): Maximale Wartezeit in Sekunden
+        delay (int): Wartezeit zwischen den Verbindungsversuchen in Sekunden
     """
-    t0 = time.time()
+
+    t0 = time.time()  # Startzeit zur Berechnung des Timeout
+
+    # Wiederholt Verbindungsversuche bis zum Ablauf der maximalen Wartezeit
     while time.time() - t0 < timeout:
         try:
+            # Baut eine Verbindung zur Neo4j-Instanz über den Bolt-Protokolltreiber auf
             with GraphDatabase.driver(uri, auth=auth) as drv:
                 with drv.session() as s:
+                    # Führt eine einfache Testabfrage aus, um die Betriebsbereitschaft zu prüfen
                     s.run("RETURN 1").consume()
+            
+            # Gibt eine Erfolgsmeldung aus, wenn Neo4j bereit ist
             print("✅ Neo4j ist bereit.")
             return
+
         except ServiceUnavailable:
+            # Wenn Neo4j noch nicht erreichbar ist, wird kurz gewartet und erneut versucht
             time.sleep(delay)
+
+    # Wird nach Ablauf des Timeouts ausgelöst, falls Neo4j nicht verfügbar ist
     raise RuntimeError("❌ Neo4j kam nicht hoch – Timeout!")
 
 
 def run_neo4j_import():
-    """
-    Führt den vollständigen Datenimport in eine Neo4j-Datenbank durch.
-
-    Diese Funktion verwendet den `neo4j-admin import`-Befehl innerhalb eines Docker-Containers,
-    um eine vollständig neue Datenbankinstanz mit CSV-Dateien aus der lokalen Umgebung
-    zu befüllen. Die Daten bestehen sowohl aus statischen Dateien (z. B. Produkte, Kategorien)
-    als auch dynamisch generierten CSV-Dateien für Nodes und Beziehungen.
-
-    Importiert werden:
-    - Statische Knoten wie Produkte und Kategorien
-    - Statische Beziehungen wie `product_categories`
-    - Dynamisch generierte Nodes gemäß `NODE_TYPES`
-    - Dynamisch generierte Beziehungen gemäß `RELATION_BUILDERS`
-
-    Die Option `--overwrite-destination=true` sorgt dafür, dass bei jedem Import
-    die bestehende Datenbank überschrieben wird. Die Pfade zur Import- und Datenbankstruktur
-    werden mithilfe von Docker-Volumes bereitgestellt, sodass der Container temporär 
-    ausgeführt werden kann (`--rm`).
-
-    Voraussetzungen:
-    ----------------
-    - CSV-Dateien müssen im Verzeichnis `CSV_DIR` vorhanden sein.
-    - Docker-Image muss unter dem Namen `IMAGE_NAME` gebaut worden sein.
-    - Das lokale Volume `neo4j_data/` enthält das Neo4j-Datenverzeichnis.
-
-    Ablauf:
-    -------
-    1. Statische und dynamische Dateien werden dem Kommando als `--nodes` und `--relationships` übergeben.
-    2. Der Container führt den Import in ein neues Datenbankverzeichnis aus.
-    3. Nach Abschluss wird der Container automatisch gelöscht.
-
-    Hinweis:
-    --------
-    Diese Methode funktioniert nur mit ausgeschaltetem Neo4j-Container, da der Import
-    exklusiven Zugriff auf das Datenverzeichnis benötigt.
-
-    Beispiel:
-    ---------
-    run_neo4j_import()  # führt den Import auf Basis der vorbereiteten CSV-Dateien aus
-    """
-
+    # Gibt eine Statusmeldung zum Start des Importvorgangs aus
     print("📦 Importiere CSV-Dateien in Neo4j (Docker) ...")
+
+    # Ermittelt die absoluten Pfade für das lokale CSV-Verzeichnis und das persistente Datenverzeichnis
     host_import_path = str(CSV_DIR.resolve())
     data_volume_path = str((Path(__file__).resolve().parent / "neo4j_data").resolve())
 
+    # Basis-Befehl zum Starten des Neo4j-Admin-Importprozesses im Docker-Container
     cmd = [
-        "docker", "run", "--rm", "--user", "7474:7474",
-        "-v", f"{host_import_path}:/var/lib/neo4j/import",
-        "-v", f"{data_volume_path}:/data",
-        IMAGE_NAME,
-        "neo4j-admin", "database", "import", "full",
-        "--overwrite-destination=true", "--verbose",
-        "--normalize-types=false"
+        "docker", "run", "--rm", "--user", "7474:7474",  # Ausführung unter dem Neo4j-User (UID/GID)
+        "-v", f"{host_import_path}:/var/lib/neo4j/import",  # Bindet Importverzeichnis ins Container-Dateisystem ein
+        "-v", f"{data_volume_path}:/data",                  # Bindet das Datenverzeichnis zur Speicherung ein
+        IMAGE_NAME,                                         # Verwendetes Neo4j-Docker-Image
+        "neo4j-admin", "database", "import", "full",        # Vollständiger Datenbankimport über Admin-Tool
+        "--overwrite-destination=true",                     # Überschreibt bestehende Datenbank (falls vorhanden)
+        "--verbose",                                        # Aktiviert detaillierte Konsolenausgabe
+        "--normalize-types=false"                           # Deaktiviert automatische Typanpassung
     ]
 
-    # 🔁 Manuelle statische Tabellen einfügen (wenn vorhanden)
+    # 🔁 Fügt ggf. vorhandene statische CSV-Dateien für definierte Knoten (Nodes) hinzu
     static_nodes = {"Product": "Product.csv", "Category": "Category.csv"}
     static_relationships = ["product_categories"]
 
@@ -470,94 +409,92 @@ def run_neo4j_import():
         if node_file.exists():
             cmd.append(f"--nodes={label}=/var/lib/neo4j/import/{file_name}")
 
+    # 🔁 Fügt ggf. vorhandene statische CSV-Dateien für Beziehungen hinzu
     for rel in static_relationships:
         rel_file = CSV_DIR / f"{rel}.csv"
         if rel_file.exists():
             cmd.append(f"--relationships={rel}=/var/lib/neo4j/import/{rel}.csv")
 
-    # 🔁 Dynamisch generierte Nodes hinzufügen (mit korrektem Label)
+    # 🔁 Dynamisch generierte Knotendateien aus dem vorherigen JSON-Konvertierungsprozess einbinden
     for table, label in NODE_TYPES.items():
         node_file = CSV_DIR / f"{table}.csv"
         if node_file.exists():
             cmd.append(f"--nodes={label}=/var/lib/neo4j/import/{table}.csv")
 
-    # 🔁 Dynamisch generierte Beziehungen hinzufügen
+    # 🔁 Dynamisch generierte Beziehungsdateien hinzufügen
     for rel in RELATION_BUILDERS:
         rel_file = CSV_DIR / f"{rel}.csv"
         if rel_file.exists():
             cmd.append(f"--relationships={rel}=/var/lib/neo4j/import/{rel}.csv")
 
+    # Beendet den Befehl mit dem Namen der zu erstellenden Datenbank ("neo4j")
     cmd += ["--", "neo4j"]
+
+    # Führt den vollständigen Importbefehl aus; bricht bei Fehler ab (check=True)
     subprocess.run(cmd, check=True)
+
+    # Gibt eine Bestätigung über den erfolgreichen Abschluss aus
     print("✅ Import abgeschlossen.")
 
 
 def cleanup():
-    """
-    Entfernt alle temporär erstellten CSV-Dateien im Importverzeichnis.
-
-    Nach erfolgreichem Import in die Neo4j-Datenbank werden die erzeugten CSV-Dateien
-    aus dem `CSV_DIR` gelöscht. Zusätzlich wird das gesamte Verzeichnis rekursiv entfernt,
-    um Speicherplatz freizugeben und eine saubere Arbeitsumgebung zu gewährleisten.
-    """
+    # Gibt eine Statusmeldung aus, dass die temporären CSV-Dateien gelöscht werden
     print("🧹 Lösche CSV-Dateien ...")
+
+    # Durchsucht das Zielverzeichnis nach allen CSV-Dateien und löscht sie einzeln
     for file in CSV_DIR.glob("*.csv"):
-        file.unlink()
+        file.unlink()  # entfernt die Datei vom Dateisystem
+
+    # Löscht anschließend das gesamte Verzeichnis, in dem die CSV-Dateien lagen
     shutil.rmtree(CSV_DIR)
 
 
 def reset_database_directory():
-    """
-    Setzt das lokale Datenbankverzeichnis (`neo4j_data`) zurück.
-
-    Für den `neo4j-admin import` ist ein leerer Datenbankordner notwendig.
-    Falls bereits ein Ordner mit dem Namen `neo4j_data` existiert, wird dieser
-    vollständig gelöscht und anschließend neu erstellt.
-    """
+    # Bestimmt den Pfad zum lokalen Datenverzeichnis der Neo4j-Instanz
     db_path = Path(__file__).resolve().parent / "neo4j_data"
+
+    # Prüft, ob der Ordner bereits existiert und ein Verzeichnis ist
     if db_path.exists() and db_path.is_dir():
         print("🧨 Entferne bestehenden Neo4j-Datenbank-Ordner ...")
-        shutil.rmtree(db_path)
+        shutil.rmtree(db_path)  # Löscht das gesamte Verzeichnis rekursiv
         print("✅ Alter Datenbankordner entfernt.")
+
+    # Erstellt ein neues, leeres Verzeichnis für die Datenbank
     db_path.mkdir(parents=True, exist_ok=True)
 
 
 def main():
-    """
-    Hauptfunktion für den vollständigen Import einer JSON-Datei in Neo4j.
-
-    Diese Funktion stellt die zentrale Ablaufsteuerung für die datenbankseitige Verarbeitung dar.
-    Sie akzeptiert ein JSON-Datei-Argument via Kommandozeile (`--file-id`) und führt folgende Schritte aus:
-
-    1. Setzt das Datenbankverzeichnis zurück.
-    2. Stoppt ggf. einen laufenden Neo4j-Container.
-    3. Konvertiert die übergebene JSON-Datei in das CSV-Importformat.
-    4. Führt einen vollständigen Datenbankimport mit `neo4j-admin` durch.
-    5. Entfernt temporäre CSV-Dateien.
-    6. Startet den Neo4j-Container mit der frisch importierten Datenbank.
-
-    Hinweis:
-    --------
-    Diese Methode eignet sich insbesondere für Performancevergleiche mit wachsender Datenmenge,
-    da sie jedes Mal eine frische Datenbank mit konsistenter Struktur erstellt.
-
-    Kommandozeilenargumente:
-    ------------------------
-    --file-id     : Gibt die ID der zu verarbeitenden JSON-Datei an (z. B. `users_1.json`).
-    --json-dir    : Pfad zum Verzeichnis, in dem die JSON-Dateien gespeichert sind (optional).
-    """
-
+    # Initialisiert einen Argumentparser für Kommandozeilenargumente
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file-id", type=int, required=True)
-    parser.add_argument("--json-dir", type=str, default="../output")
-    args = parser.parse_args()
+    parser.add_argument("--file-id", type=int, required=True, 
+                        help="Numerischer Suffix der zu importierenden JSON-Datei (z. B. 'users_3.json')")
+    parser.add_argument("--json-dir", type=str, default="../output",
+                        help="Pfad zum Verzeichnis mit den vorbereiteten JSON-Dateien")
+    
+    args = parser.parse_args()  # Parst die übergebenen Argumente
+    
+    # Zusammensetzen des vollständigen Dateipfads basierend auf der übergebenen file-id
     json_file = Path(args.json_dir) / f"users_{args.file_id}.json"
+
+    # 1. Entfernt ggf. vorhandene Datenbankdaten und legt ein frisches Verzeichnis an
     reset_database_directory()
+
+    # 2. Beendet laufende Neo4j-Container (falls vorhanden), um Konflikte zu vermeiden
     stop_neo4j_container()
+
+    # 3. Konvertiert die JSON-Daten in tabellenbasierte CSV-Dateien für den Import
     convert_json_to_csv_refactored(json_file, CSV_DIR)
+
+    # 4. Führt den vollständigen CSV-Import in die Neo4j-Datenbank durch
     run_neo4j_import()
+
+    # 5. Entfernt temporäre CSV-Dateien, um die Arbeitsumgebung aufzuräumen
     cleanup()
+
+    # 6. Startet die Neo4j-Datenbank im Docker-Container und wartet auf vollständige Verfügbarkeit
     start_neo4j_container()
 
+# Stellt sicher, dass die main()-Funktion nur ausgeführt wird,
+# wenn das Skript direkt gestartet wird (nicht bei Modulimport)
 if __name__ == "__main__":
     main()
