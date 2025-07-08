@@ -7,7 +7,7 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List
 
-BATCH_SIZE = 10_000
+BATCH_SIZE = 500_000 # Größe der Batches für den Datenimport
 
 
 def fix_sequences(conn):

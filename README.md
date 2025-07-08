@@ -82,8 +82,7 @@ Die vollständige, exakt versionierte Abhängigkeitsliste liegt in `requirements
 | **Disk 1**       | KIOXIA EXCERIA PRO SSD – 931 GB |
 | **Disk 2**       | KIOXIA EXCERIA PRO SSD – 931 GB |
 | **Betriebssystem** | Windows 11 (22H2) |
-| **Docker Engine** | 27.3.1 (build ce12230) |
-| **Docker Compose** | 2.30.3 |
+| **Docker Engine** | 28.2.2, (build e6534b4) |
 
 ---
 

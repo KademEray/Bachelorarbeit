@@ -24,9 +24,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
 from psycopg2.pool import ThreadedConnectionPool
 from neo4j import GraphDatabase
+from functools import partial
 from tqdm import tqdm
 import math
-import uuid, random, string
 import argparse
 import json
 import os
@@ -43,10 +43,10 @@ CPU_CORES = multiprocessing.cpu_count()
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format="%(2023)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("logs/benchmark.log", encoding="utf-8"),  # Protokollierung in Datei
-        logging.StreamHandler()  # Zusätzlich Ausgabe auf Konsole
+        logging.FileHandler("logs/benchmark.log", encoding="utf-8"),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -55,44 +55,6 @@ logger = logging.getLogger(__name__)
 ###############################################################################
 # Hilfsfunktionen: Docker‑Statistik -----------------------------------------
 ###############################################################################
-_CLK_TCK_CACHE: dict[str, int] = {}
-
-def _clk_tck_for_container(cid: str) -> int:
-    """Liefert den CLK_TCK-Wert (Jiffies pro Sekunde) des Containers."""
-    if cid in _CLK_TCK_CACHE:
-        return _CLK_TCK_CACHE[cid]
-
-    try:
-        # Versucht, den CLK_TCK-Wert direkt im Container abzufragen
-        out = subprocess.check_output(
-            ["docker", "exec", cid, "getconf", "CLK_TCK"],
-            text=True, stderr=subprocess.DEVNULL
-        ).strip()
-        val = int(out)
-    except Exception:
-        val = 100          # Standardwert für x86-64-Systeme
-    _CLK_TCK_CACHE[cid] = val
-    return val
-
-
-def _read_iowait_jiffies(cid: str) -> int:
-    """
-    Liest iowait-Jiffies aus /proc/stat des Containers (nicht des Hosts).
-    Das funktioniert auch unter Docker Desktop auf Windows/Mac.
-    """
-    try:
-        # /proc/stat wird über docker exec gelesen, um auf Containerwerte zuzugreifen
-        txt = subprocess.check_output(
-            ["docker", "exec", cid, "cat", "/proc/stat"],
-            text=True, stderr=subprocess.DEVNULL
-        )
-        for line in txt.splitlines():
-            if line.startswith("cpu "):
-                fields = line.split()
-                return int(fields[5])  # Spalte 6 = iowait
-    except Exception as e:
-        print(f"[warn] iowait konnte nicht gelesen werden: {e}")
-        return 0
 
 
 def _read_cgroup_stats(cid: str) -> dict[str, int]:
@@ -123,46 +85,11 @@ def _read_cgroup_stats(cid: str) -> dict[str, int]:
             cpu_usec = int(ln.split()[1])
             break
 
-    # ---------- Block-I/O ----------
-    io_txt = _read_file("io.stat")
-
-    def _sum_io(kind: str) -> int:
-        total = 0
-        for ln in io_txt.splitlines():
-            for kv in ln.split()[1:]:
-                k, v = kv.split("=", 1)
-                if k == kind or k == f"{kind}_recursive":
-                    total += int(v)
-        return total
-
-    rbytes = _sum_io("rbytes")  # Lesezugriffe in Byte
-    wbytes = _sum_io("wbytes")  # Schreibzugriffe in Byte
-
-    # ---------- Network-I/O ----------
-    # Standard-Netzwerkinterface "eth0" auslesen
-    net_rx = net_tx = 0
-    try:
-        iface = "eth0"
-        base = f"/sys/class/net/{iface}/statistics"
-        if use_exec:
-            net_rx = int(_cat_inside(f"{base}/rx_bytes").strip())
-            net_tx = int(_cat_inside(f"{base}/tx_bytes").strip())
-        else:
-            net_rx = int(Path(base, "rx_bytes").read_text().strip())
-            net_tx = int(Path(base, "tx_bytes").read_text().strip())
-    except Exception:
-        # Fallback – z. B. wenn Interface anders heißt oder nicht vorhanden ist
-        pass
-
     # ---------- Memory ----------
     mem_now  = int(_read_file("memory.current").strip())
 
     return {
         "cpu_usec":  cpu_usec,
-        "io_rbytes": rbytes,
-        "io_wbytes": wbytes,
-        "net_rbytes": net_rx,
-        "net_tbytes": net_tx,
         "mem_now":   mem_now,
     }
 
@@ -172,26 +99,68 @@ def _delta(before: dict, after: dict) -> dict:
     return {k: after[k] - before[k] for k in before}
 
 
-def get_docker_disk_mb(container: str) -> float:
-    """Gibt die Größe des beschreibbaren Layers (SizeRootFs) in MB zurück."""
+def _bytes_to_mb(b: int) -> float:
+    return b / 1024**2
+
+
+def _volume_usage(name: str) -> int:
+    """
+    Liefert belegte Bytes eines Docker-Volumes.
+    Nutzt .UsageData.Size (Docker 20.10 +).  Fällt bei Fehler auf 0 B zurück.
+    """
     try:
-        out = subprocess.run(
-            ["docker", "container", "inspect", "--size", "--format", "{{.SizeRootFs}}", container],
-            capture_output=True, text=True, check=True
-        ).stdout.strip()
+        out = subprocess.check_output(
+            ["docker", "volume", "inspect",
+             "--format", "{{.UsageData.Size}}", name],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip() or "0"
+        return int(out)
+    except Exception:
+        logger.debug(f"[DISK] Volumengröße für '{name}' nicht ermittelbar – 0 B angenommen.")
+        return 0
 
-        bytes_val = int(out)
-        mb_val = bytes_val / (1024 * 1024)
-        logger.debug(f"Disk usage für Container '{container}': {mb_val:.2f} MB")
-        return mb_val
 
-    except ValueError:
-        logger.warning(f"Kann Disk-Wert nicht in Integer umwandeln: '{out}'")
-        return math.nan
+def get_docker_disk_mb(container: str) -> float:
+    """
+    Gibt die **Gesamtgröße** (MB) zurück:
 
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Fehler beim Abrufen der Docker-Disk-Größe für '{container}': {e}")
-        return math.nan
+        SizeRootFs  +  Σ UsageData.Size aller Volume-Mounts
+    """
+    root_bytes = 0
+    vol_bytes  = 0
+
+    # 1️⃣  beschreibbarer Layer
+    try:
+        root_str = subprocess.check_output(
+            ["docker", "container", "inspect", "--size",
+             "--format", "{{.SizeRootFs}}", container],
+            text=True).strip() or "0"
+        root_bytes = int(root_str)
+    except Exception as e:
+        logger.warning(f"[DISK] Root-FS-Größe für '{container}' nicht ermittelbar: {e}")
+
+    # 2️⃣  Volumes des Containers
+    try:
+        mounts_json = subprocess.check_output(
+            ["docker", "container", "inspect",
+             "--format", "{{json .Mounts}}", container],
+            text=True).strip()
+        mounts = json.loads(mounts_json)
+
+        for m in mounts:
+            if m.get("Type") == "volume":
+                vol_bytes += _volume_usage(m["Name"])
+
+    except Exception as e:
+        logger.warning(f"[DISK] Volume-Infos für '{container}' fehlen: {e}")
+
+    total_mb = _bytes_to_mb(root_bytes + vol_bytes)
+    logger.debug(
+        f"[DISK] {container}: root={_bytes_to_mb(root_bytes):.1f} MB, "
+        f"volumes={_bytes_to_mb(vol_bytes):.1f} MB → total={total_mb:.1f} MB"
+    )
+
+    return total_mb if total_mb > 0 else math.nan
 
 
 ###############################################################################
@@ -216,13 +185,13 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
     # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
         # Gibt eine große Menge an Produktdaten zurück – Test für reine Leselast auf einer Einzel-Tabelle mit ORDER BY
-        "SELECT id, name, price, stock, created_at, updated_at FROM products ORDER BY id LIMIT 10000;",
+        "SELECT id, name, price, stock, created_at, updated_at FROM products ORDER BY id LIMIT 50000;",
 
         # Abruf aller Kategorienamen – kleinerer Umfang, geringer Aufwand
-        "SELECT id, name FROM categories ORDER BY id LIMIT 1000;",
+        "SELECT id, name FROM categories ORDER BY id LIMIT 5000;",
 
         # Abfrage auf Adressen mit kleiner Ergebnisgröße – Basis-Leseoperation
-        "SELECT * FROM addresses ORDER BY id LIMIT 25;",
+        "SELECT * FROM addresses ORDER BY id LIMIT 1000;",
     ],
 
     # ───────── MEDIUM ─────────
@@ -235,7 +204,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
                           FROM product_categories pc
                          WHERE pc.product_id = p.id )
          ORDER BY p.id
-         LIMIT 100;
+         LIMIT 1000;
         """,
 
         # Holt Artikel aus den zuletzt erstellten Bestellungen (JOINs über drei Tabellen, sortiert nach Zeit)
@@ -251,7 +220,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
           JOIN order_items  oi ON oi.order_id = o.id
           JOIN products     p  ON p.id        = oi.product_id
          ORDER BY o.created_at DESC, o.id DESC, p.id
-         LIMIT 20;
+         LIMIT 500;
         """,
 
         # Gibt die fünf neuesten Bewertungen zurück – moderate Datenmenge mit ORDER BY auf Datum
@@ -263,7 +232,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
                created_at
           FROM reviews
          ORDER BY created_at DESC, id DESC
-         LIMIT 5;
+         LIMIT 100;
         """,
     ],
 
@@ -278,7 +247,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
           JOIN order_items  oi ON oi.order_id = o.id
          GROUP BY o.id, o.created_at
          ORDER BY o.id
-         LIMIT 50;
+         LIMIT 500;
         """,
 
         # Ermittelt Produkte mit einem durchschnittlichen Rating über 4 – Aggregation mit HAVING
@@ -290,7 +259,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
           JOIN reviews  r ON r.product_id = p.id
          GROUP BY p.id, p.name
         HAVING AVG(r.rating) > 4
-         ORDER BY avg_rating DESC, p.id LIMIT 200;
+         ORDER BY avg_rating DESC, p.id LIMIT 1000;
         """,
 
         # Gibt Anzahl der Bestellungen in den letzten 30 Tagen pro User zurück, sofern mind. 1 Bestellung vorhanden ist
@@ -303,7 +272,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
          GROUP BY u.id
        HAVING COUNT(*) > 0
          ORDER BY u.id
-         LIMIT 50;
+         LIMIT 500;
         """,
     ],
 
@@ -332,20 +301,32 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
            AND oi2.product_id <> (SELECT product_id FROM top_prod)
          GROUP BY oi2.product_id
          ORDER BY freq DESC, oi2.product_id
-         LIMIT 20;
+         LIMIT 100;
         """,
 
-        # Kombinierte Filterung: Nur Produkte, die ein Nutzer sowohl angesehen als auch tatsächlich gekauft hat
+        #Produkt-Co-Occurrence –  Top-25 Produktpaare, die gemeinsam
+        #wenigstens einmal in derselben Bestellung auftauchten.
+        #• Jede Bestellung zählt pro Paar nur einmal
+        #• Reihenfolge der IDs wird festgelegt, damit (A,B) = (B,A)
         """
-        SELECT DISTINCT p.id,
-                        p.name
-          FROM product_views v
-          JOIN orders        o  ON o.user_id    = v.user_id
-          JOIN order_items   oi ON oi.order_id  = o.id
-          JOIN products      p  ON p.id         = v.product_id
-                               AND p.id         = oi.product_id
-         ORDER BY p.id
-         LIMIT 25;
+        WITH pairs AS (
+            SELECT
+                LEAST(oi1.product_id, oi2.product_id)      AS prodA,
+                GREATEST(oi1.product_id, oi2.product_id)   AS prodB,
+                oi1.order_id                               AS order_id
+            FROM   order_items  oi1
+            JOIN   order_items  oi2
+                ON  oi2.order_id   = oi1.order_id
+                AND oi2.product_id > oi1.product_id     -- Duplikate + Selbstpaare raus
+        )
+        SELECT  prodA,
+                prodB,
+                COUNT(DISTINCT order_id) AS co_orders      -- ⇦ jede Bestellung nur 1-mal
+        FROM    pairs
+        GROUP  BY prodA, prodB
+        -- HAVING COUNT(DISTINCT order_id) >= 2          -- (falls Mindest-Support gewünscht)
+        ORDER BY co_orders DESC, prodA, prodB
+        LIMIT 100;
         """,
 
         # Zwei-Hop-Empfehlung: Welche Produkte kaufen Nutzer, die bereits den Top-Seller gekauft haben – zielt auf Relevanznetzwerk
@@ -371,7 +352,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
            AND oi2.product_id <> (SELECT product_id FROM top_prod)
          GROUP BY oi2.product_id
          ORDER BY freq DESC, oi2.product_id
-         LIMIT 20;
+         LIMIT 100;
         """,
     ],
 
@@ -519,7 +500,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
         WHERE pp.id = victim.id
         RETURNING pp.id AS deleted_purchase_id;
         """
-    ],
+    ]
 }
 
 PG_OPT_QUERIES = PG_NORMAL_QUERIES   # gleiche SQL-Syntax
@@ -545,7 +526,7 @@ NEO_NORMAL_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 10000;
+        LIMIT 50000;
         """,
 
         # Liest maximal 1.000 Kategorien aus – Rückgabe von ID und Name
@@ -554,7 +535,7 @@ NEO_NORMAL_QUERIES = {
         RETURN c.id   AS id,
                c.name AS name
         ORDER BY id
-        LIMIT 1000;
+        LIMIT 5000;
         """,
 
         # Gibt 25 Adressen mit vollständigem Attributsatz zurück – sortiert nach ID
@@ -568,7 +549,7 @@ NEO_NORMAL_QUERIES = {
                a.country    AS country,
                a.is_primary AS is_primary
         ORDER BY id
-        LIMIT 25;
+        LIMIT 1000;
         """,
     ],
 
@@ -585,7 +566,7 @@ NEO_NORMAL_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 100;
+        LIMIT 1000;
         """,
 
         # Ermittelt die letzten 20 Bestellungen und zugehörige Produkte – inkl. Menge
@@ -602,7 +583,7 @@ NEO_NORMAL_QUERIES = {
                p.updated_at AS updated_at,
                oi.quantity  AS quantity
         ORDER BY o.created_at DESC, o.id DESC, id
-        LIMIT 20;
+        LIMIT 500;
         """,
 
         # Liefert die 5 neuesten Reviews – nach Erstellungsdatum und ID sortiert
@@ -614,7 +595,7 @@ NEO_NORMAL_QUERIES = {
                r.rating     AS rating,
                r.created_at AS created_at
         ORDER BY created_at DESC, id DESC
-        LIMIT 5;
+        LIMIT 100;
         """,
     ],
 
@@ -628,7 +609,7 @@ NEO_NORMAL_QUERIES = {
                o.created_at AS created_at,
                total        AS total
         ORDER BY id
-        LIMIT 50;
+        LIMIT 500;
         """,
 
         # Produkte mit durchschnittlicher Bewertung > 4 (nach Bewertung absteigend)
@@ -640,7 +621,7 @@ NEO_NORMAL_QUERIES = {
                p.name      AS name,
                avg_rating  AS avg_rating
         ORDER BY avg_rating DESC, id
-        LIMIT 200;
+        LIMIT 1000;
         """,
 
         # Zählt Bestellungen der letzten 30 Tage pro Nutzer (nur Nutzer mit ≥1 Bestellung)
@@ -652,7 +633,7 @@ NEO_NORMAL_QUERIES = {
         RETURN u.id            AS id,
                orders_last_30d AS orders_last_30d
         ORDER BY id
-        LIMIT 50;
+        LIMIT 500;
         """,
     ],
 
@@ -671,17 +652,24 @@ NEO_NORMAL_QUERIES = {
         RETURN oi2.product_id AS rec_id ,
         COUNT(*) AS freq
         ORDER BY freq DESC , rec_id
-        LIMIT 20;
+        LIMIT 100;
         """,
 
-        # Schnittmenge: Produkte, die ein Nutzer sowohl angesehen als auch gekauft hat
+        #Produkt-Co-Occurrence –  Top-25 Produktpaare, die gemeinsam
+        #wenigstens einmal in derselben Bestellung auftauchten.
+        #• Jede Bestellung zählt pro Paar nur einmal
+        #• Reihenfolge der IDs wird festgelegt, damit (A,B) = (B,A)
         """
-        MATCH (u:User)-[:VIEWED]->(:ProductView)-[:VIEWED_PRODUCT]->(p:Product)
-        MATCH (u)-[:PLACED]->(:Order)-[:HAS_ITEM]->(:OrderItem {product_id: p.id})
-        RETURN DISTINCT p.id   AS id,
-                        p.name AS name
-        ORDER BY id
-        LIMIT 25;
+        MATCH (o:Order)-[:HAS_ITEM]->(:OrderItem)-[:REFERS_TO]->(p1:Product)
+        MATCH (o)-[:HAS_ITEM]->(:OrderItem)-[:REFERS_TO]->(p2:Product)
+        WHERE  p1.id < p2.id                          // Duplikate & Selbstpaare vermeiden
+
+        WITH p1, p2, COUNT(DISTINCT o) AS co_orders   // ⇦ wie SQL: DISTINCT order_id
+        RETURN p1.id  AS prodA,
+            p2.id  AS prodB,
+            co_orders
+        ORDER BY co_orders DESC, prodA, prodB
+        LIMIT 100;
         """,
 
         # Zwei-Hop-Produktempfehlung auf Basis von Top-Produkt: andere Käufe derselben Käuferschaft
@@ -697,7 +685,7 @@ NEO_NORMAL_QUERIES = {
         RETURN oi2.product_id AS product_id ,
         COUNT(*) AS freq
         ORDER BY freq DESC , product_id
-        LIMIT 20;
+        LIMIT 100;
         """,
     ],
 
@@ -852,7 +840,7 @@ NEO_NORMAL_QUERIES = {
         DETACH DELETE pp
         RETURN deleted_purchase_id;
         """
-    ],
+    ]
 }
 
 
@@ -871,7 +859,7 @@ NEO_OPT_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 10000;
+        LIMIT 50000;
         """,
 
         # Alle Kategorien – alphabetisch sortiert nach ID
@@ -880,7 +868,7 @@ NEO_OPT_QUERIES = {
         RETURN c.id   AS id,
                c.name AS name
         ORDER BY id
-        LIMIT 1000;
+        LIMIT 5000;
         """,
 
         # Adressen mit allen gespeicherten Feldern – maximal 25
@@ -894,7 +882,7 @@ NEO_OPT_QUERIES = {
                a.country    AS country,
                a.is_primary AS is_primary
         ORDER BY id
-        LIMIT 25;
+        LIMIT 1000;
         """,
     ],
 
@@ -911,7 +899,7 @@ NEO_OPT_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 100;
+        LIMIT 1000;
         """,
 
         # Produkte und Mengen aus den 20 neuesten Bestellungen – Relation CONTAINS
@@ -927,7 +915,7 @@ NEO_OPT_QUERIES = {
                p.updated_at AS updated_at,
                oi.quantity  AS quantity
         ORDER BY o.created_at DESC, o.id DESC, id
-        LIMIT 20;
+        LIMIT 500;
         """,
 
         # Neueste Reviews über REIEWED-Relationship – 5 Einträge mit Meta-Infos
@@ -939,7 +927,7 @@ NEO_OPT_QUERIES = {
                rev.rating    AS rating,
                rev.created_at AS created_at
         ORDER BY rev.created_at DESC, id DESC
-        LIMIT 5;
+        LIMIT 100;
         """,
     ],
     # ───────── COMPLEX ─────────
@@ -952,7 +940,7 @@ NEO_OPT_QUERIES = {
                o.created_at AS created_at,
                total        AS total
         ORDER BY id
-        LIMIT 50;
+        LIMIT 500;
         """,
 
         # Produkte mit durchschnittlicher Bewertung über 4 (basierend auf REVIEWED-Relation)
@@ -964,7 +952,7 @@ NEO_OPT_QUERIES = {
                p.name     AS name,
                avg_rating AS avg_rating
         ORDER BY avg_rating DESC, id
-        LIMIT 200;
+        LIMIT 1000;
         """,
 
         # Nutzer mit Bestellungen innerhalb der letzten 30 Tage (inkl. Zählung)
@@ -975,7 +963,7 @@ NEO_OPT_QUERIES = {
         RETURN u.id            AS id,
                orders_last_30d AS orders_last_30d
         ORDER BY id
-        LIMIT 50;
+        LIMIT 500;
         """,
     ],
 
@@ -983,29 +971,35 @@ NEO_OPT_QUERIES = {
     Complexity.VERY_COMPLEX: [
         # Cross-Selling: meistverkauftes Produkt → weitere Käufe durch gleiche Nutzer
         """
-        MATCH (:Order)-[:CONTAINS]->(p1:Product)
-        WITH p1, COUNT(*) AS freq
-        ORDER BY freq DESC, p1.id
-        LIMIT 1                               // top product
+        // Schritt 1: best-seller bestimmen
+        MATCH (:Order)-[:CONTAINS]->(top:Product)
+        WITH top, count(*) AS freq ORDER BY freq DESC LIMIT 1
 
-        MATCH (u:User)-[:PLACED]->(:Order)-[:CONTAINS]->(p1)
-        WITH DISTINCT u, p1
-        MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p2:Product)
-        WHERE p2 <> p1
-        RETURN p2.id  AS rec_id,
-               COUNT(*) AS freq
+        // Schritt 2: alle weiteren Produkte derselben Käufer
+        MATCH (top)<-[:CONTAINS]-(:Order)<-[:PLACED]-(u:User)
+        MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p:Product)
+        WHERE p <> top
+        WITH p, count(*) AS freq
+        RETURN p.id AS rec_id, freq
         ORDER BY freq DESC, rec_id
-        LIMIT 20;
+        LIMIT 100;
         """,
 
-        # Produkte, die sowohl angesehen als auch gekauft wurden (Schnittmenge)
+        #Produkt-Co-Occurrence –  Top-25 Produktpaare, die gemeinsam
+        #wenigstens einmal in derselben Bestellung auftauchten.
+        #• Jede Bestellung zählt pro Paar nur einmal
+        #• Reihenfolge der IDs wird festgelegt, damit (A,B) = (B,A)
         """
-        MATCH (u:User)-[:VIEWED]->(p:Product)
-        MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p)
-        RETURN DISTINCT p.id   AS id,
-                        p.name AS name
-        ORDER BY id
-        LIMIT 25;
+        MATCH (o:Order)-[:CONTAINS]->(p1:Product)
+        MATCH (o)-[:CONTAINS]->(p2:Product)
+        WHERE  p1.id < p2.id
+
+        WITH p1, p2, COUNT(DISTINCT o) AS co_orders
+        RETURN p1.id  AS prodA,
+            p2.id  AS prodB,
+            co_orders
+        ORDER BY co_orders DESC, prodA, prodB
+        LIMIT 100;
         """,
 
         # Zwei-Hop-Netz: Nutzer, die ein Top-Produkt gekauft haben + deren weitere Käufe
@@ -1022,7 +1016,7 @@ NEO_OPT_QUERIES = {
         RETURN p2.id  AS prod_id,
                COUNT(*) AS freq
         ORDER BY freq DESC, prod_id
-        LIMIT 20;
+        LIMIT 100;
         """,
     ],
 
@@ -1166,7 +1160,7 @@ NEO_OPT_QUERIES = {
         DELETE pur
         RETURN deleted_purchase_rel_id;
         """
-    ],
+    ]
 }
 
 
@@ -1183,9 +1177,8 @@ WARMUP_SLEEP = 0.05
 # Spaltenüberschriften der CSV-Datei zur Ergebnisspeicherung
 CSV_HEADER = [
     "db", "mode", "phase", "concurrency", "query_no", "repeat", "complexity",
-    "duration_ms","per_query_ms","qps", "avg_cpu", "iowait_pct", "avg_mem",
-    "disk_mb", "total_read_mb", "total_write_mb", "net_recv_mb", "net_send_mb",
-    "statement", "result"
+    "duration_ms","qps", "avg_cpu", "avg_mem",
+    "disk_mb", "statement", "result"
 ]
 
 
@@ -1206,13 +1199,12 @@ def _warmup_parallel(func, query: str, concurrency: int):
         logger.debug("Überspringe Warm-up, da WARMUP_RUNS <= 0.")
         return
 
-    total_runs = concurrency * WARMUP_RUNS
-    logger.debug(f"Starte Warm-up: {total_runs} Durchläufe mit concurrency={concurrency}")
+    logger.debug(f"Starte Warm-up: {concurrency} Durchläufe mit concurrency={concurrency}")
     logger.debug(f"Warm-up Query: {query.replace(chr(10), ' ')}")
 
     # Ausführung mit ThreadPool für paralleles Warm-up
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futs = [ex.submit(func, query) for _ in range(total_runs)]
+        futs = [ex.submit(func, query) for _ in range(concurrency)]
         for ft in as_completed(futs):
             _ = ft.result()  # Fehler (z. B. Verbindungsprobleme) werden bewusst nicht unterdrückt
 
@@ -1252,8 +1244,8 @@ def _run_and_time(func, *a, **kw) -> float:
 
 
 def _log_csv(writer, *, phase, db, mode, conc, idx, repeat,
-             comp, dur, per_q_ms, qps, avg_cpu, iowait_pct, avg_mem,
-             disk_mb, total_read_mb, total_write_mb, net_recv_mb, net_send_mb, stmt, res):
+             comp, dur, qps, avg_cpu, avg_mem,
+             disk_mb, stmt, res):
     """
     Schreibt eine vollständige Benchmark-Zeile in die CSV-Ausgabedatei und loggt
     gleichzeitig eine kompakte Zusammenfassung der Metriken.
@@ -1268,34 +1260,27 @@ def _log_csv(writer, *, phase, db, mode, conc, idx, repeat,
     - repeat: Wiederholungsindex
     - comp: Komplexitätsstufe
     - dur: Gesamtdauer in Millisekunden
-    - per_q_ms: Durchschnittsdauer pro Einzel-Query
     - qps: Queries pro Sekunde
     - avg_cpu: durchschnittliche CPU-Auslastung in %
-    - iowait_pct: IO-Warteanteil in %
     - avg_mem: durchschnittlicher RAM-Verbrauch in MB
     - disk_mb: Festplattenverbrauch insgesamt in MB
-    - total_read_mb: Lesezugriffe in MB
-    - total_write_mb: Schreibzugriffe in MB
-    - net_recv_mb / net_send_mb: Netzwerkverkehr in MB
     - stmt: ausgeführte Query
     - res: serialisiertes Query-Ergebnis
     """
     row = [
         db, mode, phase, conc, idx, repeat, comp.value,
-        f"{dur:.2f}", f"{per_q_ms:.2f}", f"{qps:.2f}", 
-        f"{avg_cpu:.2f}", f"{iowait_pct:.2f}", f"{avg_mem:.2f}",
-        f"{disk_mb:.2f}", f"{total_read_mb:.2f}", f"{total_write_mb:.2f}",
-        f"{net_recv_mb:.2f}", f"{net_send_mb:.2f}",
+        f"{dur:.2f}", f"{qps:.2f}", 
+        f"{avg_cpu:.2f}", f"{avg_mem:.2f}",
+        f"{disk_mb:.2f}",
         stmt.replace("\n", " "), json.dumps(res, ensure_ascii=False, default=str)
     ]
     writer.writerow(row)
     logger.info(
         f"[{db.upper()}] {phase} | Mode: {mode} | Query #{idx} | "
-        f"Conc: {conc} | Time: {dur:.2f}ms | per Query: {per_q_ms:.2f}ms | qps: {qps:.2f} | "
-        f"AVG CPU: {avg_cpu:.2f}% | iowait: {iowait_pct:.2f}% | "
+        f"Conc: {conc} | Time: {dur:.2f}ms | qps: {qps:.2f} | "
+        f"AVG CPU: {avg_cpu:.2f}% |"
         f"AVG Mem: {avg_mem:.2f}MB |"
-        f"Disk: {disk_mb:.2f}MB | Read Δ: {total_read_mb:.2f}MB | Write Δ: {total_write_mb:.2f}MB |"
-        f"Net RX: {net_recv_mb:.2f}MB | Net TX: {net_send_mb:.2f}MB | "
+        f"Disk: {disk_mb:.2f}MB |"
     )
 
 
@@ -1411,7 +1396,6 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
 
     # ➊ Docker-ID und CPU-Taktfrequenz (für IO-Wait-Auswertung) holen
     cid = _cid_of(container)
-    clk_tck = _clk_tck_for_container(cid)
 
     # Connection-Pool global initialisieren (für parallele Query-Ausführung)
     global PG_POOL
@@ -1436,27 +1420,24 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
 
                 # ---------- WARM-UP ----------
                 if WARMUP_RUNS > 0:
-                    logger.debug(f"[PG_BENCHMARK] Starte Warm-up für Query #{idx}")
-                    warm_ms = _run_and_time(
-                        _warmup_parallel,  # Führt Query mehrfach parallel aus
-                        _run_pg_query,     # Funktionsreferenz: eine Query
-                        query,             # SQL-Statement
-                        conc               # Anzahl gleichzeitiger Threads
-                    )
-                    # Warm-up-Ergebnisse loggen (ohne detaillierte Systemdaten)
-                    _log_csv(w, phase="warmup", db="postgres", mode=mode,
-                             conc=conc, idx=idx, repeat=0, comp=comp,
-                             dur=warm_ms, avg_cpu=math.nan, iowait_pct=math.nan,
-                             avg_mem=math.nan, per_q_ms=math.nan, qps=math.nan,
-                             disk_mb=get_docker_disk_mb(container),
-                             total_read_mb=0, total_write_mb=0,
-                             net_recv_mb=0, net_send_mb=0,
-                             stmt=query, res={"note": "warmup"})
+                    for wrep in range(1, WARMUP_RUNS + 1):
+                        logger.debug(f"[PG_BENCHMARK] Warm-up {wrep}/{WARMUP_RUNS} | Query #{idx}")
+                        warm_ms = _run_and_time(
+                            _warmup_parallel,  # Führt Query mehrfach parallel aus
+                            _run_pg_query,     # Funktionsreferenz: eine Query
+                            query,             # SQL-Statement
+                            conc               # Anzahl gleichzeitiger Threads
+                        )
+                        # Warm-up-Ergebnisse loggen (ohne detaillierte Systemdaten)
+                        _log_csv(w, phase="warmup", db="postgres", mode=mode,
+                                conc=conc, idx=idx, repeat=wrep, comp=comp,
+                                dur=warm_ms, avg_cpu=math.nan,
+                                avg_mem=math.nan, qps=math.nan,
+                                disk_mb=get_docker_disk_mb(container),
+                                stmt=query, res={"note": "warmup"})
 
                 # ---------- STEADY-RUNS ----------
                 for rep in range(1, REPETITIONS + 1):
-                    # Systemzustand vor dem Lauf erfassen
-                    io0 = _read_iowait_jiffies(cid)
                     start_stats = _read_cgroup_stats(cid)  # ➋
 
                     # Zeitmessung + parallele Ausführung der Query
@@ -1466,35 +1447,22 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
                         first_result = futs[0].result()  # erster Rückgabewert zur Logging-Ausgabe
                     duration_ms = (time.perf_counter_ns() - t0) / 1_000_000
 
-                    # Systemzustand nach dem Lauf erfassen
-                    io1 = _read_iowait_jiffies(cid)
                     end_stats = _read_cgroup_stats(cid)  # ➌
                     d = _delta(start_stats, end_stats)  # Delta-Werte berechnen
 
                     # Kennzahlen berechnen
-                    per_query_ms = duration_ms / conc
                     qps = conc * 1000 / duration_ms
-                    elapsed_sec = duration_ms / 1000
                     cpu_sec = d["cpu_usec"] / 1_000_000
-                    delta_iowait_sec = (io1 - io0) / clk_tck
-                    iowait_pct = (delta_iowait_sec / (elapsed_sec * CPU_CORES)) * 100
-                    avg_cpu = (cpu_sec / (elapsed_sec * CPU_CORES)) * 100
+                    avg_cpu = (cpu_sec / (duration_ms / 1000 * CPU_CORES)) * 100
                     avg_mem = (start_stats["mem_now"] + end_stats["mem_now"]) / 2 / 1024**2
-                    total_read_mb = d["io_rbytes"] / 1_048_576
-                    total_write_mb = d["io_wbytes"] / 1_048_576
-                    net_recv_mb = d["net_rbytes"] / 1_048_576
-                    net_send_mb = d["net_tbytes"] / 1_048_576
                     disk_mb = get_docker_disk_mb(container)
 
                     # Ergebnisse in CSV schreiben und in Logdatei ausgeben
                     _log_csv(w, phase="steady", db="postgres", mode=mode,
                              conc=conc, idx=idx, repeat=rep, comp=comp,
-                             dur=duration_ms, per_q_ms=per_query_ms, qps=qps,
-                             avg_cpu=avg_cpu, iowait_pct=iowait_pct, avg_mem=avg_mem,
+                             dur=duration_ms, qps=qps,
+                             avg_cpu=avg_cpu, avg_mem=avg_mem,
                              disk_mb=disk_mb,
-                             total_read_mb=total_read_mb,
-                             total_write_mb=total_write_mb,
-                             net_recv_mb=net_recv_mb, net_send_mb=net_send_mb,
                              stmt=query, res=first_result)
 
         logger.info(f"[PG_BENCHMARK] Benchmark abgeschlossen: {output.name}")
@@ -1509,6 +1477,11 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
 ###############################################################################
 
 NEO_BOLT_URI = "bolt://localhost:7687"
+FETCH_SIZE = 100
+
+def _open_session(drv):
+    # fetch_size greift sofort, ohne extra Objekt
+     return drv.session(fetch_size=FETCH_SIZE)
 
 def _run_neo_query(query: str, driver) -> dict:
     """
@@ -1532,16 +1505,24 @@ def _run_neo_query(query: str, driver) -> dict:
     Fehlerbehandlung:
     - Alle Ausnahmen werden geloggt und erneut geworfen, damit sie im Benchmarking-Framework sichtbar bleiben
     """
-    logger.debug(f"[NEO_QUERY] Starte Query")
+    logger.debug("[NEO_QUERY] starte")
     try:
-        with driver.session() as sess:
-            res = sess.run(query)
-            records = list(res)  # Records erst lesen
-            result = _serialize_neo(records, res.consume())
-            logger.debug(f"[NEO_QUERY] Query erfolgreich abgeschlossen. Ergebnis: {result}")
-            return result
-    except Exception as e:
-        logger.exception(f"[NEO_QUERY] Fehler beim Ausführen der Query: {query}")
+        rows, first = 0, None
+        with _open_session(driver) as sess:          # einheitlicher Aufruf
+            result = sess.run(query)
+            for record in result:                    # streamend iterieren
+                rows += 1
+                if first is None:
+                    first = record.data()
+            summary = result.consume()
+
+        return {
+            "rows": rows,
+            "first": first
+        }
+
+    except Exception:
+        logger.exception("[NEO_QUERY] Fehler")
         raise
 
 
@@ -1574,7 +1555,6 @@ def _neo_benchmark(queries: Dict[Complexity, List[str]],
     """
     logger.info("[NEO_BENCHMARK] starte, container=%s", container)
     cid = _cid_of(container)
-    clk_tck = _clk_tck_for_container(cid)
     driver = GraphDatabase.driver(
         NEO_BOLT_URI, auth=("neo4j", "superpassword55"))
 
@@ -1589,25 +1569,23 @@ def _neo_benchmark(queries: Dict[Complexity, List[str]],
 
                 # ---------- WARM-UP ----------
                 if(WARMUP_RUNS > 0):
-                    logger.debug(f"[NEO_BENCHMARK] Starte Warm-up für Query #{idx}")
-                    warm_ms = _run_and_time(
-                        _warmup_parallel,        # <- neue Signatur
-                        lambda q: _run_neo_query(q, driver),          # Query-Runner
-                        query,                   # SQL-String
-                        conc                     # concurrency
-                    )
-                    _log_csv(w, phase="warmup", db="neo4j", mode=mode,
-                            conc=conc, idx=idx, repeat=0, comp=comp,
-                            dur=warm_ms, avg_cpu=math.nan, iowait_pct=math.nan,
-                            avg_mem=math.nan, per_q_ms=math.nan, qps=math.nan,
-                            disk_mb=get_docker_disk_mb(container),
-                            total_read_mb=0, total_write_mb=0,
-                            net_recv_mb=0, net_send_mb=0,
-                            stmt=query, res={"note": "warmup"})
+                    for wrep in range(1, WARMUP_RUNS + 1):
+                        logger.debug(f"[NEO_BENCHMARK] Warm-up {wrep}/{WARMUP_RUNS} | Query #{idx}")
+                        warm_ms = _run_and_time(
+                            _warmup_parallel,        # <- neue Signatur
+                            partial(_run_neo_query, driver=driver),          # Query-Runner
+                            query,                   # SQL-String
+                            conc                     # concurrency
+                        )
+                        _log_csv(w, phase="warmup", db="neo4j", mode=mode,
+                                conc=conc, idx=idx, repeat=wrep, comp=comp,
+                                dur=warm_ms, avg_cpu=math.nan,
+                                avg_mem=math.nan, qps=math.nan,
+                                disk_mb=get_docker_disk_mb(container),
+                                stmt=query, res={"note": "warmup"})
 
                 # ---------- STEADY-RUNS ----------
                 for rep in range(1, REPETITIONS+1):
-                    io0 = _read_iowait_jiffies(cid)
                     s0 = _read_cgroup_stats(cid)
                     t0 = time.perf_counter_ns()
                     with ThreadPoolExecutor(max_workers=conc) as ex:
@@ -1615,31 +1593,19 @@ def _neo_benchmark(queries: Dict[Complexity, List[str]],
                                 for _ in range(conc)]
                         first_result = futs[0].result()
                     duration_ms = (time.perf_counter_ns()-t0)/1_000_000
-                    io1 = _read_iowait_jiffies(cid)
                     s1 = _read_cgroup_stats(cid)
                     d  = _delta(s0, s1)
-                    per_query_ms = duration_ms / conc               # Schnitt pro Request
                     qps          = conc * 1000 / duration_ms        # Concurrency / ms → / s
                     # ─── Kennzahlen berechnen ─────────────────────────────
-                    elapsed_sec = duration_ms / 1000          # Messintervall
                     cpu_sec     = d["cpu_usec"] / 1_000_000    # Δ CPU-Zeit
-                    delta_iowait_sec = (io1 - io0) / clk_tck
-                    iowait_pct       = (delta_iowait_sec / (elapsed_sec * CPU_CORES)) * 100
-                    avg_cpu = (cpu_sec / (elapsed_sec * CPU_CORES)) * 100     # kann >100% sein
+                    avg_cpu = (cpu_sec / (duration_ms / 1000 * CPU_CORES)) * 100
                     avg_mem  = (s0["mem_now"] + s1["mem_now"]) / 2 / 1024**2
-                    total_read_mb  = d["io_rbytes"] / 1_048_576
-                    total_write_mb = d["io_wbytes"] / 1_048_576
-                    net_recv_mb     = d["net_rbytes"] / 1_048_576
-                    net_send_mb     = d["net_tbytes"] / 1_048_576
                     disk_mb = get_docker_disk_mb(container)
 
                     _log_csv(w, phase="steady", db="neo4j", mode=mode,
                              conc=conc, idx=idx, repeat=rep, comp=comp,
-                             dur=duration_ms, per_q_ms=per_query_ms, qps=qps,
-                             avg_cpu=avg_cpu, iowait_pct=iowait_pct, avg_mem=avg_mem, disk_mb=disk_mb,
-                             total_read_mb=total_read_mb,
-                             total_write_mb=total_write_mb,
-                             net_recv_mb=net_recv_mb, net_send_mb=net_send_mb,
+                             dur=duration_ms, qps=qps,
+                             avg_cpu=avg_cpu, avg_mem=avg_mem, disk_mb=disk_mb,
                              stmt=query, res=first_result)
 
     logger.info(f"[NEO_BENCHMARK] Benchmark abgeschlossen: {output.name}")

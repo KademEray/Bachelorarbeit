@@ -205,4 +205,27 @@ ALTER TABLE "product_views"      ADD FOREIGN KEY ("product_id")     REFERENCES "
 ALTER TABLE "product_purchases"  ADD FOREIGN KEY ("user_id")        REFERENCES "users" ("id");
 ALTER TABLE "product_purchases"  ADD FOREIGN KEY ("product_id")     REFERENCES "products" ("id");
 
+-- Erweiterungen & Zusatzoptimierungen
+
+-- Erweiterung: Extensions für bessere Indexierung und Textsuche
+CREATE EXTENSION IF NOT EXISTS citext;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Erweiterung: Textsuche für Produktsuche & E-Mails beschleunigen
+CREATE INDEX idx_products_name_trgm ON products USING gin (name gin_trgm_ops);
+CREATE INDEX idx_users_email_trgm   ON users USING gin (email gin_trgm_ops);
+
+-- Erweiterung: BRIN-Index für große Zeitreihen (schneller für Scans)
+CREATE INDEX brin_product_views_viewed_at
+  ON product_views USING brin (viewed_at);
+CREATE INDEX brin_product_purchases_purchased_at
+  ON product_purchases USING brin (purchased_at);
+CREATE INDEX brin_orders_created_at
+  ON orders USING brin (created_at);
+
+-- Erweiterung: Covering Indexes (Index-Only Scans bei häufigen Joins)
+CREATE INDEX idx_order_items_order_product_cover ON order_items(order_id, product_id) INCLUDE(quantity, price);
+CREATE INDEX idx_reviews_product_user_cover      ON reviews(product_id, user_id) INCLUDE(rating, created_at);
+CREATE INDEX idx_cart_items_user_product_cover   ON cart_items(user_id, product_id) INCLUDE(quantity, added_at);
+
 -- Ende Setup

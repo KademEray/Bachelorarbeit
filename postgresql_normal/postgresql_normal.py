@@ -38,13 +38,14 @@ def start_normal_postgres_container():
     subprocess.run([
         "docker", "run", "-d", "--rm",
         "--name", CONTAINER_NAME,
+        "--shm-size", "10g",
         "-e", "POSTGRES_PASSWORD=pass",
         "-e", "POSTGRES_DB=testdb",
         "-p", f"{POSTGRES_PORT}:5432",
         IMAGE_NAME
     ], check=True)
     print("⏳ Warte auf Initialisierung...")
-    time.sleep(5)
+    time.sleep(15)
     print("✅ Container läuft.")
 
 

@@ -12,10 +12,8 @@ from neo4j.exceptions import ServiceUnavailable    # Fehlerbehandlung bei nicht 
 
 # === Konfiguration der Arbeitsumgebung ===
 
-IMPORT_DIR = Path(__file__).resolve().parent / "import"  # Verzeichnis für importierte CSV-Dateien
-CSV_DIR = IMPORT_DIR                                     # Alias zur Vereinfachung im Code
+CSV_DIR = Path(__file__).resolve().parent / "import"  # Verzeichnis für importierte CSV-Dateien
 
-NEO4J_BIN = "/var/lib/neo4j/bin/neo4j-admin"             # (Optional) Pfad zum Admin-Tool innerhalb des Containers
 CONTAINER_NAME = "neo5_test_optimized"                   # Eindeutiger Name für den Docker-Container (Optimized-Version)
 IMAGE_NAME = "neo5-optimized"                            # Name des zu verwendenden Docker-Images (Optimized-Version)
 

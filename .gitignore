@@ -187,3 +187,8 @@ neo4j_schema_dump.json
 /cmp_results
 /plots
 /results
+/control
+/plots_1
+/plots_2
+/results_1
+/results_2

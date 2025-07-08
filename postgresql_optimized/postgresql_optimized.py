@@ -24,19 +24,17 @@ def build_optimized_postgres_image(DOCKERFILE_DIR: Path = DOCKERFILE_DIR):
 def start_optimized_postgres_container():
     """Startet den optimierten PostgreSQL-Container aus dem zuvor gebauten Docker-Image."""
     print(f"🚀 Starte Container '{CONTAINER_NAME}' aus Image '{IMAGE_NAME}' ...")
-    
-    # Startet den Container im Hintergrund (-d) und entfernt ihn automatisch nach dem Stoppen (--rm)
     subprocess.run([
         "docker", "run", "-d", "--rm",
-        "--name", CONTAINER_NAME,                # Eindeutiger Name für den Container
-        "-e", "POSTGRES_PASSWORD=pass",          # Setzt das Passwort für den Benutzer 'postgres'
-        "-e", "POSTGRES_DB=testdb",              # Erstellt beim Start automatisch die Datenbank 'testdb'
-        "-p", f"{POSTGRES_PORT}:5432",           # Bindet den Container-Port 5432 an den Host-Port
-        IMAGE_NAME                               # Verwendet das angegebene optimierte Image
+        "--name", CONTAINER_NAME,
+        "--shm-size", "10g",
+        "-e", "POSTGRES_PASSWORD=pass",
+        "-e", "POSTGRES_DB=testdb",
+        "-p", f"{POSTGRES_PORT}:5432",
+        IMAGE_NAME
     ], check=True)
-
     print("⏳ Warte auf Initialisierung...")
-    time.sleep(5)  # Gibt der Datenbank initial Zeit zum Starten
+    time.sleep(15)
     print("✅ Container läuft.")
 
 

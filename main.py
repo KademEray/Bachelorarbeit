@@ -41,7 +41,7 @@ ANALYSE = BASE_DIR / "analyse.py"
 
 
 # Liste von Nutzerzahlen für die Simulation (z. B. 100, 1000 usw.)
-USER_STEPS = [1000]
+USER_STEPS = [10000]
 
 
 # Maximale Anzahl an Benchmark-Runden
@@ -49,11 +49,11 @@ MAX_ROUNDS = 1
 
 
 # Anzahl der Wiederholungen für jeden Benchmarklauf
-repetitions = 1
+repetitions = 5
 
 
 # Warmup-Runden zur Stabilisierung der Umgebung
-warmups = 0
+warmups = 5
 
 
 # === Logging-Konfiguration für eine übersichtliche Konsolenausgabe ===
@@ -77,69 +77,71 @@ def timeit(msg: str):
 
 def run_once(n_users: int, rounds: int) -> None:
     try:
-        # 🔁 Führt einen vollständigen Durchlauf mit allen vier Datenbankvarianten durch (normal & optimiert, PostgreSQL & Neo4j)
+        # print(f"Starte Benchmark für {n_users} Nutzer (Runde {rounds})")
+        # # 🔁 Führt einen vollständigen Durchlauf mit allen vier Datenbankvarianten durch (normal & optimiert, PostgreSQL & Neo4j)
 
-        # 1) Datengenerierung mit n_users
-        with timeit(f"generate_data.py ({n_users})"):
-            subprocess.run([sys.executable, "-u", str(GEN),
-                            "--users", str(n_users)],
-                           check=True)
+        # # # 1) Datengenerierung mit n_users
+        # with timeit(f"generate_data.py ({n_users})"):
+        #     subprocess.run([sys.executable, "-u", str(GEN),
+        #                     "--users", str(n_users)],
+        #                    check=True)
 
-        # 2) Export statischer Produktdaten in SQL- und Cypher-Dateien
+        #2) Export statischer Produktdaten in SQL- und Cypher-Dateien
         with timeit("export_sql_cypher.py"):
             subprocess.run([sys.executable, "-u", str(EXPORT)], check=True)
 
-        # ============ Normal PostgreSQL ============
-        logging.info("Starte Normal PostgreSQL Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
+        # # ============ Normal PostgreSQL ============
+        # logging.info("Starte Normal PostgreSQL Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
 
-        build_normal_postgres_image("./postgresql_normal")
-        start_normal_postgres_container()
-        apply_normal_sql_structure("./postgresql_normal/setup_postgres_normal.sql")
+        # build_normal_postgres_image("./postgresql_normal")
+        # start_normal_postgres_container()
+        # apply_normal_sql_structure("./postgresql_normal/setup_postgres_normal.sql")
 
-        with timeit("insert_normal_postgresql_data.py"):
-            subprocess.run([sys.executable, "-u", str(INSERT_POSTGRESQL_NORMAL),
-                            "--file-id", str(n_users),
-                            "--json-dir", "./output"],
-                           check=True)
+        # with timeit("insert_normal_postgresql_data.py"):
+        #     subprocess.run([sys.executable, "-u", str(INSERT_POSTGRESQL_NORMAL),
+        #                     "--file-id", str(n_users),
+        #                     "--json-dir", "./output"],
+        #                    check=True)
 
-        with timeit("performance_benchmark.py"):
-            subprocess.run([sys.executable, "-u", str(BENCH),
-                            "--variant", "pg_normal",
-                            "--users", str(n_users),
-                            "--round", str(rounds),
-                            "--repetitions", str(repetitions),
-                            "--warmups", str(warmups)],
-                           check=True)
+        # with timeit("performance_benchmark.py"):
+        #     subprocess.run([sys.executable, "-u", str(BENCH),
+        #                     "--variant", "pg_normal",
+        #                     "--users", str(n_users),
+        #                     "--round", str(rounds),
+        #                     "--repetitions", str(repetitions),
+        #                     "--warmups", str(warmups)],
+        #                    check=True)
 
-        stop_normal_postgres_container()
-        delete_normal_postgres_image()
-        logging.info("Beendet Normal PostgreSQL Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
+        # stop_normal_postgres_container()
+        # delete_normal_postgres_image()
+        # logging.info("Beendet Normal PostgreSQL Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
 
-        # ============ Optimized PostgreSQL ============
-        logging.info("Starte Optimized PostgreSQL Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
+        # # ============ Optimized PostgreSQL ============
+        # logging.info("Starte Optimized PostgreSQL Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
 
-        build_optimized_postgres_image("./postgresql_optimized")
-        start_optimized_postgres_container()
-        apply_optimized_sql_structure("./postgresql_optimized/setup_postgres_optimized.sql")
+        # build_optimized_postgres_image("./postgresql_optimized")
+        # start_optimized_postgres_container()
+        # apply_optimized_sql_structure("./postgresql_optimized/setup_postgres_optimized.sql")
 
-        with timeit("insert_optimized_postgresql_data.py"):
-            subprocess.run([sys.executable, "-u", str(INSERT_POSTGRESQL_OPTIMIZED),
-                            "--file-id", str(n_users),
-                            "--json-dir", "./output"],
-                           check=True)
+        # with timeit("insert_optimized_postgresql_data.py"):
+        #     subprocess.run([sys.executable, "-u", str(INSERT_POSTGRESQL_OPTIMIZED),
+        #                     "--file-id", str(n_users),
+        #                     "--json-dir", "./output"],
+        #                    check=True)
 
-        with timeit("performance_benchmark.py"):
-            subprocess.run([sys.executable, "-u", str(BENCH),
-                            "--variant", "pg_opt",
-                            "--users", str(n_users),
-                            "--round", str(rounds),
-                            "--repetitions", str(repetitions),
-                            "--warmups", str(warmups)],
-                           check=True)
+        # with timeit("performance_benchmark.py"):
+        #     subprocess.run([sys.executable, "-u", str(BENCH),
+        #                     "--variant", "pg_opt",
+        #                     "--users", str(n_users),
+        #                     "--round", str(rounds),
+        #                     "--repetitions", str(repetitions),
+        #                     "--warmups", str(warmups)],
+        #                    check=True)
 
-        stop_optimized_postgres_container()
-        delete_optimized_postgres_image()
-        logging.info("Beendet Optimized PostgreSQL Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
+
+        # stop_optimized_postgres_container()
+        # delete_optimized_postgres_image()
+        # logging.info("Beendet Optimized PostgreSQL Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
 
         # ============ Normal Neo4j ============
         logging.info("Starte Normal Neo4j Benchmark für %d Nutzer (Runde %d)", n_users, rounds)
@@ -162,6 +164,7 @@ def run_once(n_users: int, rounds: int) -> None:
                             "--repetitions", str(repetitions),
                             "--warmups", str(warmups)],
                            check=True)
+            
 
         stop_normal_neo4j_container()
         delete_normal_neo4j_image()
@@ -188,6 +191,7 @@ def run_once(n_users: int, rounds: int) -> None:
                             "--repetitions", str(repetitions),
                             "--warmups", str(warmups)],
                            check=True)
+            
 
         stop_optimized_neo4j_container()
         delete_optimized_neo4j_image()

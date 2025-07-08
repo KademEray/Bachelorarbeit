@@ -23,7 +23,7 @@ COLOR_CMAP  = plt.get_cmap("Blues")
 # Matplotlib-Standardwerte anpassen (z. B. für hohe Auflösung)
 plt.rcParams.update({
     "figure.autolayout": True,  # automatischer Abstand von Elementen
-    "figure.dpi":        300    # hohe Auflösung für Druck/Export
+    "figure.dpi":        1000    # hohe Auflösung für Druck/Export
 })
 
 
@@ -36,7 +36,7 @@ def savefig(name: str):
     - name (str): Dateiname (ohne Erweiterung)
     """
     path = PLOT_DIR / f"{name}.png"
-    plt.savefig(path, dpi=300, bbox_inches="tight")
+    plt.savefig(path, dpi=600, bbox_inches="tight")
     print(f"💾  plots/{path.name}")  # Hinweis in der Konsole
 
 
@@ -79,7 +79,7 @@ df_raw = (
 # ────────────── Pivot-Tabelle (Ø über repeats / rounds / users) ──────────────
 pivot_all = (
     df_raw.groupby(["variant", "concurrency", "query_no"])
-          .agg(duration_ms=("per_query_ms", "mean"),   # Durchschnittliche Dauer pro Query
+          .agg(duration_ms=("duration_ms", "mean"),   # Durchschnittliche Dauer pro Query
                avg_cpu     =("avg_cpu",      "mean"),   # Durchschnittliche CPU-Auslastung
                avg_mem     =("avg_mem",      "mean"))   # Durchschnittlicher Speicherverbrauch
           .reset_index()
@@ -89,7 +89,7 @@ pivot_all = (
 # ────────────── Pivot pro User-Größe  (100, 1000 …)  ─────────────────────────
 pivot_by_user = (
     df_raw.groupby(["users", "variant", "concurrency", "query_no"])
-          .agg(duration_ms=("per_query_ms", "mean"),   # Ø pro Benutzergruppe
+          .agg(duration_ms=("duration_ms", "mean"),   # Ø pro Benutzergruppe
                avg_cpu     =("avg_cpu",      "mean"),
                avg_mem     =("avg_mem",      "mean"))
           .reset_index()
@@ -136,43 +136,219 @@ def line_plots(source: pd.DataFrame, tag: str):
             plt.close(fig)
 
 
-def grouped_bars(source: pd.DataFrame, tag: str):
+def grouped_bars(source: pd.DataFrame, tag: str) -> None:
     """
-    Erstellt gruppierte Balkendiagramme:
-      – Für jede Concurrency-Stufe (1, 3, 5, 10) ein separates Diagramm
-      – x-Achse: Query-IDs
-      – y-Achse: durchschnittliche Ausführungsdauer (ms)
-      – 1 Balkengruppe pro Query, darin je 1 Balken pro Datenbank-Variante
-    Der Parameter `tag` wird im Dateinamen verwendet (z. B. "_all", "_u100").
+    Gruppierte Balkendiagramme:
+      – je Concurrency-Stufe ein Plot
+      – Balken gruppiert nach Query-ID, je Variante ein Balken
+      – automatische Entscheidung:
+            * symlog-y-Achse   (wenn Range ≥ 20×)
+            * sonst Bildhöhe   (wenn Range ≥ 5×)
     """
-    bar_w   = 0.18
-    x_pos   = np.arange(len(QUERY_IDS))
+    bar_w     = 0.18
+    x_pos     = np.arange(len(QUERY_IDS))
+    variants  = sorted(source["variant"].unique())
 
     for conc in CONCURRENCY:
-        fig, ax = plt.subplots(figsize=(12, 4))
-        for j, variant in enumerate(sorted(source["variant"].unique())):
-            y = (source.query("concurrency == @conc & variant == @variant")
-                        .set_index("query_no")
-                        .reindex(QUERY_IDS)["duration_ms"]
-                        .values)
-            ax.bar(x_pos + (j-1.5)*bar_w, y,
-                   width=bar_w,
-                   label=variant)
+        # ---------- Datenmatrix bauen -----------------------------------
+        y = {}
+        for v in variants:
+            mask = (source["concurrency"] == conc) & (source["variant"] == v)
+            y[v] = (source.loc[mask]
+                          .set_index("query_no")
+                          .reindex(QUERY_IDS)["duration_ms"]
+                          .to_numpy())
+        y_all       = np.concatenate(list(y.values()))
+        global_min  = np.nanmin(y_all)
+        global_max  = np.nanmax(y_all)
+        ratio       = global_max / max(global_min, 1e-9)
 
-        ax.set_title(f"Concurrency {conc} – Average Duration per Query")
+        # ---------- Layout bestimmen ------------------------------------
+        fig_h   = 4
+        use_log = ratio >= 20
+        if use_log:
+            yscale = ("symlog", {"linthresh": global_min * 2})
+        elif ratio >= 5:
+            fig_h += 0.6 * np.log10(ratio)      # Höhe strecken
+            yscale = ("linear", {})
+        else:
+            yscale = ("linear", {})
+
+        fig, ax = plt.subplots(figsize=(12, fig_h))
+
+        # ---------- Balken zeichnen -------------------------------------
+        offset = -(len(variants)-1)/2 * bar_w
+        for j, v in enumerate(variants):
+            ax.bar(x_pos + offset + j*bar_w, y[v],
+                   width=bar_w, label=v)
+
+        # ---------- Achsen & Styling ------------------------------------
+        name, kw = yscale
+        ax.set_yscale(name, **kw)
         ax.set_xlabel("Query-ID")
         ax.set_ylabel("Average Duration (ms)")
+        ax.set_title(f"Concurrency {conc} – Avg. Duration per Query")
         ax.set_xticks(x_pos, QUERY_IDS)
-        ax.yaxis.grid(True, linestyle=":", alpha=.6)
-        ax.legend(fontsize=8, title="Variante")
+        ax.yaxis.grid(True, linestyle=":", alpha=.6, which="both")
+        ax.legend(title="Variante", fontsize=8)
+
         savefig(f"D_conc{conc}{tag}_duration_grouped")
         plt.close(fig)
 
+
+# ─────────────────────────  NEUER PLOT  ────────────────────────────────────
+def bars_conc_variant(df: pd.DataFrame, *, all_users: bool = False) -> None:
+    """
+    Balkendiagramm(e) Ø-Duration_ms  vs.  Concurrency  &  Variante.
+
+    Parameters
+    ----------
+    df         : DataFrame   –  muss Spalten  users, concurrency, variant, duration_ms enthalten
+    all_users  : bool        –  True  →  Daten aller User zusammengenommen (ein einziger Plot)
+                               False →  es wird für jede User-Größe (df['users'].unique()) ein Plot erstellt
+    """
+    # Mittelwert über alle Query-IDs bilden
+    base = (
+        df.groupby(["users", "concurrency", "variant"], as_index=False)["duration_ms"]
+          .mean()
+    )
+
+    var_order = sorted(base["variant"].unique())
+    cmap      = plt.get_cmap("tab10")
+    colors    = {v: cmap(i) for i, v in enumerate(var_order)}
+    bar_w     = 0.18
+    x_pos     = np.arange(len(CONCURRENCY))
+
+    # Helper, um genau EIN Balkendiagramm zu zeichnen
+    def _draw(ax, g, title_suffix, filename_suffix):
+        offset = -(len(var_order)-1)/2 * bar_w
+        for j, v in enumerate(var_order):
+            ys = (
+                g[g["variant"] == v]
+                  .set_index("concurrency")
+                  .reindex(CONCURRENCY)["duration_ms"]
+                  .to_numpy()
+            )
+            ax.bar(x_pos + offset + j*bar_w,
+                   ys,
+                   width=bar_w,
+                   color=colors[v],
+                   label=v)
+            # Balkenbeschriftung
+            for xp, val in zip(x_pos + offset + j*bar_w, ys):
+                ax.text(xp, val, f"{val:.0f}",
+                        ha="center", va="bottom",
+                        fontsize=6, rotation=90)
+
+        ax.set_title(f"Average Duration – {title_suffix}")
+        ax.set_xlabel("Concurrency (Threads)")
+        ax.set_ylabel("Average Duration (ms)")
+        ax.set_xticks(x_pos, [str(c) for c in CONCURRENCY])
+        ax.yaxis.grid(True, linestyle=":", alpha=.6)
+        ax.legend(title="Variante", fontsize=8)
+        savefig(f"E_users{filename_suffix}_conc_vs_variant")
+        plt.close(ax.figure)
+
+    # -------- alle User zusammen --------
+    if all_users:
+        g = (
+            base.groupby(["concurrency", "variant"], as_index=False)["duration_ms"]
+                .mean()
+        )
+        fig, ax = plt.subplots(figsize=(8, 4))
+        _draw(ax, g.assign(users="ALL"), "ALL Users", "ALL")
+        return
+
+    # -------- getrennt nach User-Größe --------
+    for users, g in base.groupby("users"):
+        fig, ax = plt.subplots(figsize=(8, 4))
+        _draw(ax, g, f"{users} Users", users)
+
+
+# ─────────────────────────  SUMMARY → CSV  ────────────────────────────
+def export_summary_csv(
+    df: pd.DataFrame,
+    out_dir: Path = Path("results"),
+    decimals: int = 1,
+) -> None:
+    """
+    • summary_table.csv   – Ø-Werte (plus Gesamtzeile 'ALL')
+    • per_query_table.csv – dieselben Metriken pro Query
+      Reihenfolge: Duration → CPU → RAM → Disk
+    """
+    out_dir.mkdir(exist_ok=True)
+
+    # ───────── feste Reihenfolgen ─────────
+    METRIC_ORDER  = ["duration_ms", "avg_cpu", "avg_mem", "disk_mb"]
+    VARIANT_ORDER = [
+        "postgres_normal",
+        "postgres_optimized",
+        "neo4j_normal",
+        "neo4j_optimized",
+    ]
+
+    # Variantenspalte in geordnete Kategorie umwandeln  ⟶   Pivot hält die Reihenfolge
+    df = df.copy()
+    df["variant"] = pd.Categorical(df["variant"],
+                                   categories=VARIANT_ORDER,
+                                   ordered=True)
+
+    # --------------------------------------------------
+    # 1️⃣  SUMMARY  (Ø über alle Queries & Wiederholungen)
+    # --------------------------------------------------
+    summary = (
+        df.groupby(["users", "concurrency", "variant"],
+                   observed=True)
+          .agg({m: ("mean") for m in METRIC_ORDER})
+          .round(decimals)
+          .pivot_table(index   = ["users", "concurrency"],
+                       columns = "variant",
+                       values  = METRIC_ORDER,
+                       sort=False,      # ⇦ behält METRIC_ORDER & VARIANT_ORDER
+                       observed=True)              
+    )
+
+    # Spaltennamen flatten:  duration_ms_postgres_normal …
+    summary.columns = [f"{m}_{v}" for m, v in summary.columns.to_flat_index()]
+    summary = summary.reset_index()
+
+    # Gesamtzeile 'ALL'
+    overall = (summary.drop(columns=["users", "concurrency"])
+                      .mean(numeric_only=True)
+                      .to_frame().T
+                      .round(decimals))
+    overall.insert(0, "concurrency", "")
+    overall.insert(0, "users", "ALL")
+    summary = pd.concat([summary, overall], ignore_index=True)
+
+    summary.to_csv(out_dir / "summary_table.csv", index=False)
+    print(f"💾 summary_table.csv geschrieben → {out_dir}")
+
+    # --------------------------------------------------
+    # 2️⃣  PER-QUERY-TABELLE  (Ausreißer sichtbar)
+    # --------------------------------------------------
+    per_q = (
+        df.groupby(["users", "concurrency", "variant", "query_no"],
+                   observed=True)
+          .agg({m: ("mean") for m in METRIC_ORDER})
+          .round(decimals)
+          .pivot_table(index   = ["users", "concurrency", "query_no"],
+                       columns = "variant",
+                       values  = METRIC_ORDER,
+                       sort=False,
+                       observed=True)
+    )
+    per_q.columns = [f"{m}_{v}" for m, v in per_q.columns.to_flat_index()]
+    per_q = per_q.reset_index()
+
+    per_q.to_csv(out_dir / "per_query_table.csv", index=False)
+    print(f"💾 per_query_table.csv geschrieben → {out_dir}")
 
 # ───────────────────── Gesamtdurchschnitt (alle Users) ───────────────────────
 print("\n▶  Plots für ALLE Runs zusammen")
 line_plots(pivot_all, tag="_all")
 grouped_bars(pivot_all, tag="_all")
+bars_conc_variant(df_raw, all_users=True)
 
 
 # ───────────────────── Plots pro User-Größe (z. B. 100 / 1000 / 10000) ───────
@@ -181,5 +357,8 @@ for users, g_user in pivot_by_user.groupby("users"):
     suffix = f"_u{users}"
     line_plots(g_user, tag=suffix)
     grouped_bars(g_user, tag=suffix)
+    bars_conc_variant(g_user)
+
+export_summary_csv(df_raw)   # schreibt results/summary_table.csv
 
 print("\n✅  Fertig!  Alle Diagramme liegen jetzt im Ordner  plots/")

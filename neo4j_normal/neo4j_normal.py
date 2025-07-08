@@ -41,14 +41,9 @@ def build_normal_neo4j_image(DOCKERFILE_DIR: Path = DOCKERFILE_DIR):
 
 def start_normal_neo4j_container():
     """
-    Startet den Neo4j-Docker-Container mit Portweiterleitung und vorbereitetem Importverzeichnis.
-    Das Image muss vorher über `build_normal_neo4j_image()` gebaut worden sein.
-    """
-
-    print(f"🚀 Starte Container '{CONTAINER_NAME}' aus Image '{IMAGE_NAME}' ...")
-
-    # Ermittelt den absoluten Pfad zum lokalen Importverzeichnis (wird ins Container-Dateisystem eingebunden)
-    host_import_path = str((DOCKERFILE_DIR / "import").resolve())
+    Startet einen Docker-Container für die optimierte Neo4j-Version.
+    Der Container wird mit Umgebungsvariablen für die Authentifizierung
+    und den notwendigen Portweiterleitungen gestartet.
 
     # Startet den Docker-Container im Hintergrund mit folgenden Eigenschaften:
     # -d: detached mode
@@ -56,21 +51,18 @@ def start_normal_neo4j_container():
     # --name: eindeutiger Containername
     # -e: Übergibt Authentifizierungskonfiguration an Neo4j
     # -p: leitet lokale Ports an Container-Ports weiter (HTTP + Bolt)
-    # -v: bindet lokales Importverzeichnis in das erwartete Pfadformat von Neo4j ein
+    """
+    print(f"🚀 Starte Container '{CONTAINER_NAME}' aus Image '{IMAGE_NAME}' ...")
     subprocess.run([
         "docker", "run", "-d", "--rm",
         "--name", CONTAINER_NAME,
         "-e", "NEO4J_AUTH=neo4j/superpassword55",
         "-p", f"{NEO4J_HTTP_PORT}:7474",
         "-p", f"{NEO4J_BOLT_PORT}:7687",
-        "-v", f"{host_import_path}:/var/lib/neo4j/import",  # ← WICHTIG: notwendig für Zugriff auf CSV-Dateien im Container
         IMAGE_NAME
     ], check=True)
-
-    # Wartezeit zur Initialisierung des Neo4j-Dienstes (alternativ: health-check oder Polling via Bolt)
     print("⏳ Warte auf Initialisierung...")
-    time.sleep(10)
-
+    time.sleep(15)
     print("✅ Container läuft.")
 
 

@@ -41,6 +41,13 @@ def start_optimized_neo4j_container():
     Startet einen Docker-Container für die optimierte Neo4j-Version.
     Der Container wird mit Umgebungsvariablen für die Authentifizierung
     und den notwendigen Portweiterleitungen gestartet.
+
+    # Startet den Docker-Container im Hintergrund mit folgenden Eigenschaften:
+    # -d: detached mode
+    # --rm: Container wird automatisch entfernt, wenn er gestoppt wird
+    # --name: eindeutiger Containername
+    # -e: Übergibt Authentifizierungskonfiguration an Neo4j
+    # -p: leitet lokale Ports an Container-Ports weiter (HTTP + Bolt)
     """
     print(f"🚀 Starte Container '{CONTAINER_NAME}' aus Image '{IMAGE_NAME}' ...")
     subprocess.run([
@@ -52,7 +59,7 @@ def start_optimized_neo4j_container():
         IMAGE_NAME
     ], check=True)
     print("⏳ Warte auf Initialisierung...")
-    time.sleep(10)
+    time.sleep(15)
     print("✅ Container läuft.")
 
 

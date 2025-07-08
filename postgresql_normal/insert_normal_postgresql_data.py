@@ -7,7 +7,7 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List
 
-BATCH_SIZE = 10_000
+BATCH_SIZE = 500_000
 
 def fix_sequences(conn):
     # Enthält eine Zuordnung aller verwendeten Sequenznamen zu den zugehörigen Tabellen.
@@ -70,7 +70,7 @@ def insert_dynamic_with_executemany(cur, conn, table: str, rows: List[dict]):
         conn.commit()
 
 
-def insert_data_to_optimized_postgres(file_id: int, json_dir: str = "../output"):
+def insert_data_to_normal_postgres(file_id: int, json_dir: str = "../output"):
     # Gibt den Pfad zur zu ladenden JSON-Datei aus
     print(f"\n📁 Lade Datei: users_{file_id}.json aus {json_dir}/ ...")
     json_path = Path(json_dir) / f"users_{file_id}.json"
@@ -162,4 +162,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Startet den Datenimport mit den übergebenen Argumenten
-    insert_data_to_optimized_postgres(args.file_id, args.json_dir)
+    insert_data_to_normal_postgres(args.file_id, args.json_dir)

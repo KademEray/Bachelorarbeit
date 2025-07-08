@@ -10,6 +10,10 @@ from postgresql_normal.postgresql_normal import (
     build_normal_postgres_image, start_normal_postgres_container,
     apply_normal_sql_structure, stop_normal_postgres_container, delete_normal_postgres_image
 )
+from postgresql_optimized.postgresql_optimized import (
+    build_optimized_postgres_image, start_optimized_postgres_container,
+    apply_optimized_sql_structure, stop_optimized_postgres_container, delete_optimized_postgres_image
+)
 from neo4j_normal.neo4j_normal import (
     build_normal_neo4j_image, start_normal_neo4j_container,
     apply_normal_cypher_structure, stop_normal_neo4j_container, delete_normal_neo4j_image
@@ -23,9 +27,9 @@ BASE_DIR = Path(__file__).parent
 GEN     = BASE_DIR / "generate_data.py"
 EXPORT  = BASE_DIR / "export_sql_cypher.py"
 INSERT_POSTGRESQL_NORMAL  = BASE_DIR / "postgresql_normal" / "insert_normal_postgresql_data.py"
+INSERT_POSTGRESQL_OPTIMIZED  = BASE_DIR / "postgresql_optimized" / "insert_optimized_postgresql_data.py"
 INSERT_NEO4J_NORMAL  = BASE_DIR / "neo4j_normal" / "insert_normal_neo4j_data.py"
 INSERT_NEO4J_OPTIMIZED  = BASE_DIR / "neo4j_optimized" / "insert_optimized_neo4j_data.py"
-BENCH   = BASE_DIR / "performance_benchmark.py"
 
 
 @contextmanager
@@ -50,19 +54,19 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
 
     # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
-        """
-        SELECT id, name, price, stock, created_at, updated_at
-          FROM products
-         ORDER BY id
-         LIMIT 10;
-        """,
-        "SELECT id, name FROM categories ORDER BY id LIMIT 10;",
-        "SELECT * FROM addresses ORDER BY id LIMIT 10;",
+        # Gibt eine große Menge an Produktdaten zurück – Test für reine Leselast auf einer Einzel-Tabelle mit ORDER BY
+        "SELECT id, name, price, stock, created_at, updated_at FROM products ORDER BY id LIMIT 50000;",
+
+        # Abruf aller Kategorienamen – kleinerer Umfang, geringer Aufwand
+        "SELECT id, name FROM categories ORDER BY id LIMIT 5000;",
+
+        # Abfrage auf Adressen mit kleiner Ergebnisgröße – Basis-Leseoperation
+        "SELECT * FROM addresses ORDER BY id LIMIT 1000;",
     ],
 
     # ───────── MEDIUM ─────────
     Complexity.MEDIUM: [
-        # Produkte mit mindestens einer Kategorie
+        # Liefert alle Produkte, die mindestens einer Kategorie zugeordnet sind (Existenzprüfung über Subquery)
         """
         SELECT p.id, p.name, p.price, p.stock, p.created_at, p.updated_at
           FROM products p
@@ -70,10 +74,10 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
                           FROM product_categories pc
                          WHERE pc.product_id = p.id )
          ORDER BY p.id
-         LIMIT 10;
+         LIMIT 1000;
         """,
 
-        # 20 Positionen aus den zuletzt angelegten Bestellungen
+        # Holt Artikel aus den zuletzt erstellten Bestellungen (JOINs über drei Tabellen, sortiert nach Zeit)
         """
         SELECT p.id,
                p.name,
@@ -86,10 +90,10 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
           JOIN order_items  oi ON oi.order_id = o.id
           JOIN products     p  ON p.id        = oi.product_id
          ORDER BY o.created_at DESC, o.id DESC, p.id
-         LIMIT 10;
+         LIMIT 500;
         """,
 
-        # fünf neueste Reviews (beliebige Produkte)
+        # Gibt die fünf neuesten Bewertungen zurück – moderate Datenmenge mit ORDER BY auf Datum
         """
         SELECT id,
                user_id,
@@ -98,13 +102,13 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
                created_at
           FROM reviews
          ORDER BY created_at DESC, id DESC
-         LIMIT 5;
+         LIMIT 100;
         """,
     ],
 
     # ───────── COMPLEX ─────────
     Complexity.COMPLEX: [
-        # Bestellsummen pro Bestellung
+        # Berechnet die Gesamtsumme jeder Bestellung über Menge × Preis – Gruppierung erforderlich
         """
         SELECT o.id,
                o.created_at,
@@ -113,10 +117,10 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
           JOIN order_items  oi ON oi.order_id = o.id
          GROUP BY o.id, o.created_at
          ORDER BY o.id
-         LIMIT 10;
+         LIMIT 500;
         """,
 
-        # Produkte mit Ø-Rating > 4
+        # Ermittelt Produkte mit einem durchschnittlichen Rating über 4 – Aggregation mit HAVING
         """
         SELECT p.id,
                p.name,
@@ -125,10 +129,10 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
           JOIN reviews  r ON r.product_id = p.id
          GROUP BY p.id, p.name
         HAVING AVG(r.rating) > 4
-         ORDER BY avg_rating DESC, p.id LIMIT 10;
+         ORDER BY avg_rating DESC, p.id LIMIT 1000;
         """,
 
-        # Bestellungen der letzten 30 Tage pro User (>0)
+        # Gibt Anzahl der Bestellungen in den letzten 30 Tagen pro User zurück, sofern mind. 1 Bestellung vorhanden ist
         """
         SELECT u.id,
                COUNT(*) AS orders_last_30d
@@ -138,13 +142,13 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
          GROUP BY u.id
        HAVING COUNT(*) > 0
          ORDER BY u.id
-         LIMIT 10;
+         LIMIT 500;
         """,
     ],
 
     # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
-        # Cross-Sell: meistgekauftes Produkt & zugehörige Empfehlungen
+        # Cross-Selling-Analyse: ermittelt Produkte, die von Käufern des Top-Sellers ebenfalls häufig gekauft wurden
         """
         WITH top_prod AS (
                 SELECT product_id
@@ -167,23 +171,35 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
            AND oi2.product_id <> (SELECT product_id FROM top_prod)
          GROUP BY oi2.product_id
          ORDER BY freq DESC, oi2.product_id
-         LIMIT 10;
+         LIMIT 100;
         """,
 
-        # Produkte, die ein User sowohl angesehen als auch gekauft hat
+        #Produkt-Co-Occurrence –  Top-25 Produktpaare, die gemeinsam
+        #wenigstens einmal in derselben Bestellung auftauchten.
+        #• Jede Bestellung zählt pro Paar nur einmal
+        #• Reihenfolge der IDs wird festgelegt, damit (A,B) = (B,A)
         """
-        SELECT DISTINCT p.id,
-                        p.name
-          FROM product_views v
-          JOIN orders        o  ON o.user_id    = v.user_id
-          JOIN order_items   oi ON oi.order_id  = o.id
-          JOIN products      p  ON p.id         = v.product_id
-                               AND p.id         = oi.product_id
-         ORDER BY p.id
-         LIMIT 10;
+        WITH pairs AS (
+            SELECT
+                LEAST(oi1.product_id, oi2.product_id)      AS prodA,
+                GREATEST(oi1.product_id, oi2.product_id)   AS prodB,
+                oi1.order_id                               AS order_id
+            FROM   order_items  oi1
+            JOIN   order_items  oi2
+                ON  oi2.order_id   = oi1.order_id
+                AND oi2.product_id > oi1.product_id     -- Duplikate + Selbstpaare raus
+        )
+        SELECT  prodA,
+                prodB,
+                COUNT(DISTINCT order_id) AS co_orders      -- ⇦ jede Bestellung nur 1-mal
+        FROM    pairs
+        GROUP  BY prodA, prodB
+        -- HAVING COUNT(DISTINCT order_id) >= 2          -- (falls Mindest-Support gewünscht)
+        ORDER BY co_orders DESC, prodA, prodB
+        LIMIT 100;
         """,
 
-        # Zwei-Hop-Netz rund um dasselbe Top-Produkt
+        # Zwei-Hop-Empfehlung: Welche Produkte kaufen Nutzer, die bereits den Top-Seller gekauft haben – zielt auf Relevanznetzwerk
         """
         WITH top_prod AS (
                 SELECT product_id
@@ -206,13 +222,13 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
            AND oi2.product_id <> (SELECT product_id FROM top_prod)
          GROUP BY oi2.product_id
          ORDER BY freq DESC, oi2.product_id
-         LIMIT 10;
+         LIMIT 100;
         """,
     ],
 
-    # ───────── CREATE ─────────
+        # ───────── CREATE ─────────
     Complexity.CREATE: [
-        # 1) neue Adresse  → liefert address_id
+        # Fügt eine neue Adresse ein – verwendet einen beliebigen User (LIMIT 1) und generiert zufällige Straße
         """
         INSERT INTO addresses (user_id, street, city, zip, country, is_primary)
         VALUES (
@@ -226,7 +242,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS address_id;
         """,
 
-        # 2) neue Bestellung  → order_id
+        # Legt eine neue Bestellung mit Status 'pending' und Betrag 0.0 an – Zeitstempel ist aktuelle Uhrzeit
         """
         INSERT INTO orders (user_id, status, total, created_at)
         VALUES (
@@ -238,7 +254,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS order_id;
         """,
 
-        # 3) Cart-Item  → cart_item_id
+        # Fügt einen neuen Warenkorb-Eintrag für ein Produkt ein – testweise mit Menge 2
         """
         INSERT INTO cart_items (user_id, product_id, quantity, added_at)
         VALUES (
@@ -250,7 +266,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS cart_item_id;
         """,
 
-        # 4) Produkt-View  → product_view_id
+        # Erfasst eine Produktansicht mit aktuellem Zeitstempel – simuliert View-Event
         """
         INSERT INTO product_views (user_id, product_id, viewed_at)
         VALUES (
@@ -264,7 +280,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
 
     # ───────── UPDATE ─────────
     Complexity.UPDATE: [
-        # 1) Lagerbestand erhöhen  → liefert id + neuer Stock-Wert
+        # Erhöht den Lagerbestand eines Produkts um 1 – simuliert z. B. Rücklieferung oder Korrektur
         """
         UPDATE products
         SET stock = stock + 1
@@ -272,7 +288,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS product_id, stock AS new_stock;
         """,
 
-        # 2) Rating um 1 senken (min. 1)  → id + neues Rating
+        # Verringert die Bewertung eines Reviews, aber nicht unter 1 – vermeidet ungültige Werte
         """
         UPDATE reviews
         SET rating = GREATEST(rating - 1, 1)
@@ -280,7 +296,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS review_id, rating AS new_rating;
         """,
 
-        # 3) Cart-Menge +3  → id + neue Quantity
+        # Erhöht die Menge eines Warenkorbeintrags – simuliert erneutes Hinzufügen desselben Produkts
         """
         UPDATE cart_items
         SET quantity = quantity + 3
@@ -288,7 +304,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING id AS cart_item_id, quantity AS new_quantity;
         """,
 
-        # 4) E-Mail anpassen  → id + neue Mail
+        # Modifiziert die E-Mail eines Nutzers testweise – dient als Dummy-Update
         """
         UPDATE users
         SET email = email || '.tmp'
@@ -299,7 +315,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
 
     # ───────── DELETE ─────────
     Complexity.DELETE: [
-        # 1) Adresse löschen  → gibt gelöschte id zurück
+        # Löscht eine Adresse – der zu löschende Eintrag wird zuvor per CTE ausgewählt
         """
         WITH victim AS (
             SELECT id
@@ -313,7 +329,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING a.id AS deleted_address_id;
         """,
 
-        # 2) Review löschen
+        # Löscht ein Review – ebenfalls über CTE ausgewählt, um das Ziel isoliert zu bestimmen
         """
         WITH victim AS (
             SELECT id
@@ -327,7 +343,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING r.id AS deleted_review_id;
         """,
 
-        # 3) Cart-Item löschen
+        # Entfernt einen Warenkorbeintrag – einfache CTE-Löschung mit Rückgabe
         """
         WITH victim AS (
             SELECT id
@@ -341,7 +357,7 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
         RETURNING c.id AS deleted_cart_item_id;
         """,
 
-        # 4) Product-Purchase löschen
+        # Löscht einen Produkteinkauf – Verwendung analog zu den vorherigen CTEs
         """
         WITH victim AS (
             SELECT id
@@ -360,7 +376,9 @@ PG_QUERIES: Dict[Complexity, List[str]] = {
 ############################################################
 NEO_NORMAL_QUERIES = {
 
+    # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
+        # Ruft bis zu 10.000 Produktknoten mit Basisattributen ab – sortiert nach ID
         """
         MATCH (p:Product)
         RETURN p.id         AS id,
@@ -370,17 +388,19 @@ NEO_NORMAL_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 10;
+        LIMIT 50000;
         """,
 
+        # Liest maximal 1.000 Kategorien aus – Rückgabe von ID und Name
         """
         MATCH (c:Category)
         RETURN c.id   AS id,
                c.name AS name
         ORDER BY id
-        LIMIT 10;
+        LIMIT 5000;
         """,
 
+        # Gibt 25 Adressen mit vollständigem Attributsatz zurück – sortiert nach ID
         """
         MATCH (a:Address)
         RETURN a.id         AS id,
@@ -391,11 +411,13 @@ NEO_NORMAL_QUERIES = {
                a.country    AS country,
                a.is_primary AS is_primary
         ORDER BY id
-        LIMIT 10;
+        LIMIT 1000;
         """,
     ],
 
+    # ───────── MEDIUM ─────────
     Complexity.MEDIUM: [
+        # Produkte, die mindestens einer Kategorie zugeordnet sind – Duplikate entfernt
         """
         MATCH (p:Product)-[:BELONGS_TO]->(:Category)
         WITH DISTINCT p
@@ -406,12 +428,13 @@ NEO_NORMAL_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 10;
+        LIMIT 1000;
         """,
 
+        # Ermittelt die letzten 20 Bestellungen und zugehörige Produkte – inkl. Menge
         """
         MATCH (o:Order)
-        WITH o ORDER BY o.created_at DESC, o.id DESC LIMIT 10
+        WITH o ORDER BY o.created_at DESC, o.id DESC LIMIT 20
         MATCH (o)-[:HAS_ITEM]->(oi:OrderItem)-[:REFERS_TO]->(p:Product)
         RETURN 
                p.id         AS id,
@@ -422,9 +445,10 @@ NEO_NORMAL_QUERIES = {
                p.updated_at AS updated_at,
                oi.quantity  AS quantity
         ORDER BY o.created_at DESC, o.id DESC, id
-        LIMIT 10;
+        LIMIT 500;
         """,
 
+        # Liefert die 5 neuesten Reviews – nach Erstellungsdatum und ID sortiert
         """
         MATCH (r:Review)
         RETURN r.id         AS id,
@@ -433,11 +457,13 @@ NEO_NORMAL_QUERIES = {
                r.rating     AS rating,
                r.created_at AS created_at
         ORDER BY created_at DESC, id DESC
-        LIMIT 5;
+        LIMIT 100;
         """,
     ],
 
+        # ───────── COMPLEX ─────────
     Complexity.COMPLEX: [
+        # Aggregiert Bestellsummen pro Order (Menge × Preis je Position)
         """
         MATCH (o:Order)-[:HAS_ITEM]->(oi:OrderItem)
         WITH o, SUM(oi.quantity * oi.price) AS total
@@ -445,9 +471,10 @@ NEO_NORMAL_QUERIES = {
                o.created_at AS created_at,
                total        AS total
         ORDER BY id
-        LIMIT 10;
+        LIMIT 500;
         """,
 
+        # Produkte mit durchschnittlicher Bewertung > 4 (nach Bewertung absteigend)
         """
         MATCH (p:Product)<-[:REVIEWS]-(r:Review)
         WITH p, AVG(r.rating) AS avg_rating
@@ -456,9 +483,10 @@ NEO_NORMAL_QUERIES = {
                p.name      AS name,
                avg_rating  AS avg_rating
         ORDER BY avg_rating DESC, id
-        LIMIT 10;
+        LIMIT 1000;
         """,
 
+        # Zählt Bestellungen der letzten 30 Tage pro Nutzer (nur Nutzer mit ≥1 Bestellung)
         """
         MATCH (u:User)-[:PLACED]->(o:Order)
         WHERE datetime(o.created_at) >= datetime() - duration({days:30})
@@ -467,11 +495,13 @@ NEO_NORMAL_QUERIES = {
         RETURN u.id            AS id,
                orders_last_30d AS orders_last_30d
         ORDER BY id
-        LIMIT 10;
+        LIMIT 500;
         """,
     ],
 
+    # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
+        # Cross-Selling: meistverkauftes Produkt → Empfehlungen basierend auf Käufen derselben Nutzer
         """
         MATCH (:Order)-[:HAS_ITEM]->(oi1:OrderItem)
         WITH oi1.product_id AS prod , COUNT(*) AS freq
@@ -484,18 +514,27 @@ NEO_NORMAL_QUERIES = {
         RETURN oi2.product_id AS rec_id ,
         COUNT(*) AS freq
         ORDER BY freq DESC , rec_id
-        LIMIT 10;
+        LIMIT 100;
         """,
 
+        #Produkt-Co-Occurrence –  Top-25 Produktpaare, die gemeinsam
+        #wenigstens einmal in derselben Bestellung auftauchten.
+        #• Jede Bestellung zählt pro Paar nur einmal
+        #• Reihenfolge der IDs wird festgelegt, damit (A,B) = (B,A)
         """
-        MATCH (u:User)-[:VIEWED]->(:ProductView)-[:VIEWED_PRODUCT]->(p:Product)
-        MATCH (u)-[:PLACED]->(:Order)-[:HAS_ITEM]->(:OrderItem {product_id: p.id})
-        RETURN DISTINCT p.id   AS id,
-                        p.name AS name
-        ORDER BY id
-        LIMIT 10;
+        MATCH (o:Order)-[:HAS_ITEM]->(:OrderItem)-[:REFERS_TO]->(p1:Product)
+        MATCH (o)-[:HAS_ITEM]->(:OrderItem)-[:REFERS_TO]->(p2:Product)
+        WHERE  p1.id < p2.id                          // Duplikate & Selbstpaare vermeiden
+
+        WITH p1, p2, COUNT(DISTINCT o) AS co_orders   // ⇦ wie SQL: DISTINCT order_id
+        RETURN p1.id  AS prodA,
+            p2.id  AS prodB,
+            co_orders
+        ORDER BY co_orders DESC, prodA, prodB
+        LIMIT 100;
         """,
 
+        # Zwei-Hop-Produktempfehlung auf Basis von Top-Produkt: andere Käufe derselben Käuferschaft
         """
         MATCH (:Order)-[:HAS_ITEM]->(oi:OrderItem)
         WITH oi.product_id AS prod , COUNT(*) AS freq
@@ -508,13 +547,13 @@ NEO_NORMAL_QUERIES = {
         RETURN oi2.product_id AS product_id ,
         COUNT(*) AS freq
         ORDER BY freq DESC , product_id
-        LIMIT 10;
+        LIMIT 100;
         """,
     ],
 
-    # ───────── CREATE ─────────
+        # ───────── CREATE ─────────
     Complexity.CREATE: [
-        # 1) neue Adresse  → liefert address_id
+        # Neue Adresse für zufälligen User – ID inkrementell, Relation HAS_ADDRESS
         """
         OPTIONAL MATCH (a:Address)
         WITH coalesce(max(a.id),0)+1 AS new_id
@@ -530,7 +569,7 @@ NEO_NORMAL_QUERIES = {
         RETURN a.id AS address_id;
         """,
 
-        # 2) neue Bestellung  → order_id
+        # Neue Bestellung für User – mit ID und Zeitstempel
         """
         OPTIONAL MATCH (o:Order)
         WITH coalesce(max(o.id),0)+1 AS new_id
@@ -544,7 +583,7 @@ NEO_NORMAL_QUERIES = {
         RETURN o.id AS order_id;
         """,
 
-        # 3) Cart-Item (Relationship)  → product_id + neue Menge
+        # Neues CartItem für Produkt und Nutzer – mit Referenzrelationen
         """
         OPTIONAL MATCH (ci:CartItem)
         WITH coalesce(max(ci.id),0)+1 AS new_id
@@ -562,7 +601,7 @@ NEO_NORMAL_QUERIES = {
         RETURN ci.id AS cart_item_id;
         """,
 
-        # 4) Produkt-View  → product_view_id
+        # Neuer Produkt-View durch Nutzer – inkl. VIEWED- und VIEWED_PRODUCT-Relation
         """
         OPTIONAL MATCH (pv:ProductView)
         WITH coalesce(max(pv.id),0)+1 AS new_id
@@ -582,7 +621,7 @@ NEO_NORMAL_QUERIES = {
 
     # ───────── UPDATE ─────────
     Complexity.UPDATE: [
-        # 1) Lagerbestand +1  → node-id + neuer Stock
+        # Lagerbestand erhöhen – erster Produkt-Knoten, neue Stock-Menge wird zurückgegeben
         """
         MATCH (p:Product)
         WITH p ORDER BY p.id LIMIT 1
@@ -591,7 +630,7 @@ NEO_NORMAL_QUERIES = {
         p.stock AS new_stock;
         """,
 
-        # 2) Rating −1 (min. 1)  → review_id + neues Rating
+        # Bewertung eines Reviews senken (min. 1) – neue Bewertung und ID zurückgeben
         """
         MATCH (r:Review) WITH r LIMIT 1
         SET   r.rating = CASE
@@ -603,7 +642,7 @@ NEO_NORMAL_QUERIES = {
             r.rating AS new_rating;
         """,
 
-        # 3) Cart-Menge +3  → cartItem-id + neue Quantity
+        # CartItem-Menge um +3 erhöhen – kleinstes CartItem wird verändert
         """
         MATCH (ci:CartItem)
         WITH ci ORDER BY ci.id       /* deterministisch: kleinste id */
@@ -613,7 +652,7 @@ NEO_NORMAL_QUERIES = {
             ci.quantity AS new_quantity;
         """,
 
-        # 4) E-Mail suffix  → user_id + neue Mail
+        # Email eines Users modifizieren – durch Suffix .tmp
         """
         MATCH (u:User) WITH u LIMIT 1
         SET   u.email = u.email + '.tmp'
@@ -624,7 +663,7 @@ NEO_NORMAL_QUERIES = {
 
     # ───────── DELETE ─────────
     Complexity.DELETE: [
-        # 1) Adresse löschen  → gelöschte id
+        # Erstes Address-Objekt samt Relationen löschen (deterministisch)
         """
         MATCH (a:Address)
         WITH a ORDER BY a.id ASC
@@ -634,7 +673,7 @@ NEO_NORMAL_QUERIES = {
         RETURN deleted_address_id;
         """,
 
-        # 2) Review-Knoten löschen
+        # Erstes Review-Objekt samt Verknüpfungen löschen
         """
         MATCH (r:Review)
         WITH r ORDER BY r.id ASC
@@ -644,7 +683,7 @@ NEO_NORMAL_QUERIES = {
         RETURN deleted_review_id;
         """,
 
-        # 3) Cart-Item-Knoten löschen
+        # Erstes CartItem löschen (inkl. Produktrelation)
         """
         MATCH (ci:CartItem)
         WITH ci ORDER BY ci.id ASC
@@ -654,7 +693,7 @@ NEO_NORMAL_QUERIES = {
         RETURN deleted_cart_item_id;
         """,
 
-        # 4) Product-Purchase-Relationship löschen
+        # Erstes ProductPurchase-Objekt löschen (inkl. evtl. zugehöriger Relationen)
         """
         MATCH (pp:ProductPurchase)
         WITH pp ORDER BY pp.id ASC
@@ -663,7 +702,7 @@ NEO_NORMAL_QUERIES = {
         DETACH DELETE pp
         RETURN deleted_purchase_id;
         """
-    ],
+    ]
 }
 
 
@@ -672,7 +711,7 @@ NEO_OPT_QUERIES = {
 
     # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
-        # 1) Produkte
+        # Alle Produkte mit Basisattributen – bis zu 10.000 Einträge
         """
         MATCH (p:Product)
         RETURN p.id         AS id,
@@ -682,19 +721,19 @@ NEO_OPT_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 10;
+        LIMIT 50000;
         """,
 
-        # 2) Kategorien
+        # Alle Kategorien – alphabetisch sortiert nach ID
         """
         MATCH (c:Category)
         RETURN c.id   AS id,
                c.name AS name
         ORDER BY id
-        LIMIT 10;
+        LIMIT 5000;
         """,
 
-        # 3) Adressen
+        # Adressen mit allen gespeicherten Feldern – maximal 25
         """
         MATCH (a:Address)
         RETURN a.id         AS id,
@@ -705,13 +744,13 @@ NEO_OPT_QUERIES = {
                a.country    AS country,
                a.is_primary AS is_primary
         ORDER BY id
-        LIMIT 10;
+        LIMIT 1000;
         """,
     ],
 
     # ───────── MEDIUM ─────────
     Complexity.MEDIUM: [
-        # Produkte mit ≥ 1 Kategorie
+        # Produkte, die mindestens einer Kategorie zugeordnet sind
         """
         MATCH (p:Product)-[:BELONGS_TO]->(:Category)
         WITH DISTINCT p
@@ -722,13 +761,13 @@ NEO_OPT_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 10;
+        LIMIT 1000;
         """,
 
-        # 20 Positionen aus den letzten Bestellungen
+        # Produkte und Mengen aus den 20 neuesten Bestellungen – Relation CONTAINS
         """
         MATCH (o:Order)
-        WITH o ORDER BY o.created_at DESC, o.id DESC LIMIT 10
+        WITH o ORDER BY o.created_at DESC, o.id DESC LIMIT 20
         MATCH (o)-[oi:CONTAINS]->(p:Product)
         RETURN p.id         AS id,
                p.name       AS name,
@@ -738,10 +777,10 @@ NEO_OPT_QUERIES = {
                p.updated_at AS updated_at,
                oi.quantity  AS quantity
         ORDER BY o.created_at DESC, o.id DESC, id
-        LIMIT 10;
+        LIMIT 500;
         """,
 
-        # fünf neueste Reviews (Relationship-basiert)
+        # Neueste Reviews über REIEWED-Relationship – 5 Einträge mit Meta-Infos
         """
         MATCH (u:User)-[rev:REVIEWED]->(p:Product)
         RETURN rev.id        AS id,
@@ -750,13 +789,12 @@ NEO_OPT_QUERIES = {
                rev.rating    AS rating,
                rev.created_at AS created_at
         ORDER BY rev.created_at DESC, id DESC
-        LIMIT 5;
+        LIMIT 100;
         """,
     ],
-
     # ───────── COMPLEX ─────────
     Complexity.COMPLEX: [
-        # Bestellsummen pro Bestellung
+        # Aggregierte Bestellsummen pro Bestellung (basierend auf Preis * Menge)
         """
         MATCH (o:Order)-[oi:CONTAINS]->(p:Product)
         WITH o, SUM(toInteger(oi.quantity) * toFloat(oi.price)) AS total
@@ -764,10 +802,10 @@ NEO_OPT_QUERIES = {
                o.created_at AS created_at,
                total        AS total
         ORDER BY id
-        LIMIT 10;
+        LIMIT 500;
         """,
 
-        # Produkte mit Ø-Rating > 4
+        # Produkte mit durchschnittlicher Bewertung über 4 (basierend auf REVIEWED-Relation)
         """
         MATCH (p:Product)<-[rev:REVIEWED]-()
         WITH p, AVG(toFloat(rev.rating)) AS avg_rating
@@ -776,10 +814,10 @@ NEO_OPT_QUERIES = {
                p.name     AS name,
                avg_rating AS avg_rating
         ORDER BY avg_rating DESC, id
-        LIMIT 10;
+        LIMIT 1000;
         """,
 
-        # Bestellungen der letzten 30 Tage pro User
+        # Nutzer mit Bestellungen innerhalb der letzten 30 Tage (inkl. Zählung)
         """
         MATCH (u:User)-[:PLACED]->(o:Order)
         WHERE datetime(o.created_at) >= datetime() - duration({days:30})
@@ -787,40 +825,46 @@ NEO_OPT_QUERIES = {
         RETURN u.id            AS id,
                orders_last_30d AS orders_last_30d
         ORDER BY id
-        LIMIT 10;
+        LIMIT 500;
         """,
     ],
 
     # ───────── VERY COMPLEX ─────────
     Complexity.VERY_COMPLEX: [
-        # Cross-Sell (Top-Produkt → weitere Käufe)
+        # Cross-Selling: meistverkauftes Produkt → weitere Käufe durch gleiche Nutzer
         """
-        MATCH (:Order)-[:CONTAINS]->(p1:Product)
-        WITH p1, COUNT(*) AS freq
-        ORDER BY freq DESC, p1.id
-        LIMIT 1                               // top product
+        // Schritt 1: best-seller bestimmen
+        MATCH (:Order)-[:CONTAINS]->(top:Product)
+        WITH top, count(*) AS freq ORDER BY freq DESC LIMIT 1
 
-        MATCH (u:User)-[:PLACED]->(:Order)-[:CONTAINS]->(p1)
-        WITH DISTINCT u, p1
-        MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p2:Product)
-        WHERE p2 <> p1
-        RETURN p2.id  AS rec_id,
-               COUNT(*) AS freq
+        // Schritt 2: alle weiteren Produkte derselben Käufer
+        MATCH (top)<-[:CONTAINS]-(:Order)<-[:PLACED]-(u:User)
+        MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p:Product)
+        WHERE p <> top
+        WITH p, count(*) AS freq
+        RETURN p.id AS rec_id, freq
         ORDER BY freq DESC, rec_id
-        LIMIT 10;
+        LIMIT 100;
         """,
 
-        # View ∩ Purchase
+        #Produkt-Co-Occurrence –  Top-25 Produktpaare, die gemeinsam
+        #wenigstens einmal in derselben Bestellung auftauchten.
+        #• Jede Bestellung zählt pro Paar nur einmal
+        #• Reihenfolge der IDs wird festgelegt, damit (A,B) = (B,A)
         """
-        MATCH (u:User)-[:VIEWED]->(p:Product)
-        MATCH (u)-[:PLACED]->(:Order)-[:CONTAINS]->(p)
-        RETURN DISTINCT p.id   AS id,
-                        p.name AS name
-        ORDER BY id
-        LIMIT 10;
+        MATCH (o:Order)-[:CONTAINS]->(p1:Product)
+        MATCH (o)-[:CONTAINS]->(p2:Product)
+        WHERE  p1.id < p2.id
+
+        WITH p1, p2, COUNT(DISTINCT o) AS co_orders
+        RETURN p1.id  AS prodA,
+            p2.id  AS prodB,
+            co_orders
+        ORDER BY co_orders DESC, prodA, prodB
+        LIMIT 100;
         """,
 
-        # Zwei-Hop um Top-Produkt
+        # Zwei-Hop-Netz: Nutzer, die ein Top-Produkt gekauft haben + deren weitere Käufe
         """
         MATCH (:Order)-[:CONTAINS]->(tp:Product)
         WITH tp, COUNT(*) AS freq
@@ -834,13 +878,13 @@ NEO_OPT_QUERIES = {
         RETURN p2.id  AS prod_id,
                COUNT(*) AS freq
         ORDER BY freq DESC, prod_id
-        LIMIT 10;
+        LIMIT 100;
         """,
     ],
 
-    # ───────── CREATE ─────────
+        # ───────── CREATE ─────────
     Complexity.CREATE: [
-        # 1) Adresse
+        # Erstellung einer neuen Adresse und Verknüpfung mit einem Nutzer (inkrementelle ID)
         """
         OPTIONAL MATCH (a:Address)
         WITH coalesce(max(a.id),0)+1 AS new_id
@@ -856,7 +900,7 @@ NEO_OPT_QUERIES = {
         RETURN a.id AS address_id;
         """,
 
-        # 2) Order
+        # Erstellung einer neuen Bestellung mit Default-Werten und Nutzerverknüpfung
         """
         OPTIONAL MATCH (o:Order)
         WITH coalesce(max(o.id),0)+1 AS new_id
@@ -870,7 +914,7 @@ NEO_OPT_QUERIES = {
         RETURN o.id AS order_id;
         """,
 
-        # 3) HAS_IN_CART-Relationship (mit eigener id)
+        # Erstellung einer neuen Warenkorb-Relation zwischen User und Produkt (inkl. Metadaten)
         """
         OPTIONAL MATCH ()-[c:HAS_IN_CART]-()
         WITH coalesce(max(c.id),0)+1 AS new_id
@@ -884,7 +928,7 @@ NEO_OPT_QUERIES = {
         RETURN c.id AS cart_rel_id;
         """,
 
-        # 4) VIEWED-Relationship (mit eigener id)
+        # Erstellung einer neuen Produkt-View-Relation zwischen Nutzer und Produkt
         """
         OPTIONAL MATCH ()-[v:VIEWED]-()
         WITH coalesce(max(v.id),0)+1 AS new_id
@@ -900,7 +944,7 @@ NEO_OPT_QUERIES = {
 
     # ───────── UPDATE ─────────
     Complexity.UPDATE: [
-        # 1) Stock +1
+        # Erhöhung des Lagerbestands um +1 bei erstem Produkt (deterministisch gewählt)
         """
         MATCH (p:Product) WITH p ORDER BY p.id LIMIT 1
         SET   p.stock = coalesce(p.stock,0) + 1
@@ -908,7 +952,7 @@ NEO_OPT_QUERIES = {
                p.stock AS new_stock;
         """,
 
-        # 2) Rating −1 (Relationship)
+        # Bewertung (REVIEWED-Relation) um −1 senken, Minimum: 1
         """
         MATCH ()-[rev:REVIEWED]-()
         WITH  rev ORDER BY rev.id LIMIT 1
@@ -921,7 +965,7 @@ NEO_OPT_QUERIES = {
                rev.rating AS new_rating;
         """,
 
-        # 3) Cart-Menge +3
+        # Erhöhung der Menge im Warenkorb (HAS_IN_CART) um +3
         """
         MATCH ()-[c:HAS_IN_CART]-()
         WITH  c ORDER BY c.id LIMIT 1
@@ -930,7 +974,7 @@ NEO_OPT_QUERIES = {
                c.quantity AS new_quantity;
         """,
 
-        # 4) E-Mail-Suffix
+        # Anhängen eines Suffixes an die E-Mail-Adresse eines beliebigen Nutzers
         """
         MATCH (u:User) WITH u LIMIT 1
         SET   u.email = u.email + '.tmp'
@@ -941,7 +985,7 @@ NEO_OPT_QUERIES = {
 
     # ───────── DELETE ─────────
     Complexity.DELETE: [
-        # 1) Adresse-Knoten
+        # Löschen eines Address-Knotens (inkl. aller eingehenden/ausgehenden Kanten)
         """
         MATCH (a:Address)
         WITH  a ORDER BY a.id LIMIT 1
@@ -950,7 +994,7 @@ NEO_OPT_QUERIES = {
         RETURN deleted_address_id;
         """,
 
-        # 2) REVIEWED-Relationship
+        # Entfernen einer REVIEWED-Beziehung (inkl. ID-Rückgabe)
         """
         MATCH ()-[rev:REVIEWED]-()
         WITH  rev ORDER BY rev.id LIMIT 1
@@ -959,7 +1003,7 @@ NEO_OPT_QUERIES = {
         RETURN deleted_review_rel_id;
         """,
 
-        # 3) HAS_IN_CART-Relationship
+        # Entfernen einer HAS_IN_CART-Beziehung (Relation wird explizit mit ID referenziert)
         """
         MATCH ()-[c:HAS_IN_CART]-()
         WHERE c.id IS NOT NULL
@@ -969,7 +1013,7 @@ NEO_OPT_QUERIES = {
         RETURN deleted_cart_rel_id;
         """,
 
-        # 4) PURCHASED-Relationship
+        # Entfernen einer PURCHASED-Beziehung mit ID-Filterung
         """
         MATCH ()-[pur:PURCHASED]-()
         WHERE pur.id IS NOT NULL
@@ -978,7 +1022,7 @@ NEO_OPT_QUERIES = {
         DELETE pur
         RETURN deleted_purchase_rel_id;
         """
-    ],
+    ]
 }
 
 
@@ -1138,6 +1182,36 @@ def run_once(n_users: int) -> None:
         delete_normal_postgres_image()
         print("✔️  PostgreSQL-normal abgeschlossen.")
 
+        # ──────────────────────────────────────────────────────── PostgreSQL (optimiert)
+        print("\n=== PostgreSQL-optimiert: Container, Struktur & Inserts ===")
+        build_optimized_postgres_image("./postgresql_optimized")
+        start_optimized_postgres_container()
+        apply_optimized_sql_structure("./postgresql_optimized/setup_postgres_optimized.sql")
+        with timeit("insert_optimized_postgresql_data.py"):
+            subprocess.run(
+                [sys.executable, "-u", str(INSERT_POSTGRESQL_OPTIMIZED),
+                 "--file-id", str(n_users), "--json-dir", "./output"],
+                check=True
+            )
+        print("→ Führe SQL-Queries (pg_opt) aus …")
+        pg_opt_conn = psycopg2.connect(
+            host="localhost",
+            port=5432,
+            user="postgres",
+            password="pass",
+            dbname="testdb"
+        )
+        pg_opt_queries_flat = flatten_queries(PG_QUERIES)
+        logging.debug("PostgreSQL-optimiert-Query-Liste:\n%s",
+                      "\n".join(f"{i+1:02d} {q.splitlines()[0][:60]}…"
+                                for i, q in enumerate(pg_opt_queries_flat)))
+        pg_opt_results = exec_pg_queries(pg_opt_conn, pg_opt_queries_flat)
+        dump_results("pg_opt", pg_opt_results, BASE_DIR / "cmp_results")
+        pg_opt_conn.close()
+        stop_optimized_postgres_container()
+        delete_optimized_postgres_image()
+        print("✔️  PostgreSQL-optimiert abgeschlossen.")
+
         # ─────────────────────────────────────────────────────── Neo4j (normal)
         print("\n=== Neo4j-normal: Container, Struktur & Inserts ===")
         build_normal_neo4j_image("./neo4j_normal")
@@ -1204,14 +1278,17 @@ def run_once(n_users: int) -> None:
         # Fallback-Clean-up (falls irgendwo vorher Exception)
         stop_normal_postgres_container()
         delete_normal_postgres_image()
+        stop_optimized_postgres_container()
+        delete_optimized_postgres_image()
         stop_normal_neo4j_container()
         delete_normal_neo4j_image()
         stop_optimized_neo4j_container()
         delete_optimized_neo4j_image()
+        print("🧹 Säubere Docker-Ressourcen …")
 
 
 def main():
-    run_once(n_users=1000)
+    run_once(n_users=10)
 
 if __name__ == "__main__":
     main()

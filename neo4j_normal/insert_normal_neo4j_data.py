@@ -13,10 +13,8 @@ from neo4j.exceptions import ServiceUnavailable           # Exception für Verbi
 
 # === Konfiguration (allgemein und dockerbasiert) ================================
 
-IMPORT_DIR = Path(__file__).resolve().parent / "import"   # Pfad zum Verzeichnis mit CSV-Dateien
-CSV_DIR = IMPORT_DIR                                      # Alias für Klarheit im restlichen Code
+CSV_DIR = Path(__file__).resolve().parent / "import"  # Verzeichnis für importierte CSV-Dateien
 
-NEO4J_BIN = "/var/lib/neo4j/bin/neo4j-admin"              # Pfad zum Admin-Tool im Container (optional, nicht direkt genutzt)
 CONTAINER_NAME = "neo5_test_normal"                       # Containername zur eindeutigen Identifikation
 IMAGE_NAME = "neo5-normal"                                # Name des zu verwendenden Docker-Images für Neo4j
 
