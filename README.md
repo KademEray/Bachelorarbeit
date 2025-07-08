@@ -20,7 +20,7 @@ Dazu werden
 
 * **synthetische Shopdaten** in zwei Größenordnungen erzeugt (100 & 1000 Nutzer),
 * identische CRUD‑Workloads (24 Queries × 4 Concurrency‑Stufen) ausgeführt und
-* Metriken wie Latenz, QPS, CPU, RAM sowie Disk‑ und Netzwerk‑I/O erfasst.
+* Metriken wie Latenz, CPU, RAM erfasst.
 
 ---
 
