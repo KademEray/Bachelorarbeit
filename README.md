@@ -58,7 +58,7 @@ Alle Generierte Shopdaten sind **vollständig synthetisch** und enthalten **kein
 
 | Einsatzbereich                 | Tool / Bibliothek            | Version |
 |--------------------------------|------------------------------|---------|
-| **Datengenerierung**           | Python (CPython)             | 3.10.11 |
+| **Datengenerierung**           | Python (CPython)             | 3.11.9 |
 |                                | `pandas`                     | 2.2.3   |
 |                                | `Faker`                      | 37.3.0  |
 | **Datenbanken&nbsp;(Docker)**  | PostgreSQL                   | 17.5    |

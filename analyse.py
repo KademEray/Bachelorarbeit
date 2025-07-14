@@ -80,6 +80,7 @@ df_raw = (
 pivot_all = (
     df_raw.groupby(["variant", "concurrency", "query_no"])
           .agg(duration_ms=("duration_ms", "mean"),   # Durchschnittliche Dauer pro Query
+               server_ms  =("server_ms",  "mean"),
                avg_cpu     =("avg_cpu",      "mean"),   # Durchschnittliche CPU-Auslastung
                avg_mem     =("avg_mem",      "mean"))   # Durchschnittlicher Speicherverbrauch
           .reset_index()
@@ -90,6 +91,7 @@ pivot_all = (
 pivot_by_user = (
     df_raw.groupby(["users", "variant", "concurrency", "query_no"])
           .agg(duration_ms=("duration_ms", "mean"),   # Ø pro Benutzergruppe
+               server_ms  =("server_ms",  "mean"),
                avg_cpu     =("avg_cpu",      "mean"),
                avg_mem     =("avg_mem",      "mean"))
           .reset_index()
@@ -99,31 +101,38 @@ pivot_by_user = (
 # ─────────────────────────── Zeichen-Funktionen ─────────────────────────────
 def line_plots(source: pd.DataFrame, tag: str):
     """
-    Erstellt für jede Datenbank-Variante ein Liniendiagramm (eine Linie pro Concurrency-Stufe),
-    und zwar für:
-        - Ausführungsdauer (ms)
-        - CPU-Auslastung (%)
-        - RAM-Verbrauch (MB)
-    
-    Der Parameter `tag` bestimmt das Suffix des Dateinamens (z. B. "_all" oder "_u100").
+    Erstellt für jede Datenbank-Variante ein Liniendiagramm (eine Linie pro
+    Concurrency-Stufe). Geplottet werden jetzt vier Metriken:
+
+        • Ausführungsdauer (Client)   – duration_ms
+        • Server-Execution-Time       – server_ms
+        • CPU-Auslastung              – avg_cpu
+        • RAM-Verbrauch               – avg_mem
     """
     metrics = [
-        ("duration_ms", "Average Duration (ms)", "A_duration"),
-        ("avg_cpu",     "Average CPU (%)",       "B_cpu"),
-        ("avg_mem",     "Average RAM (MB)",      "C_ram")
+        ("duration_ms", "Average Duration (ms)",     "A_duration"),
+        ("server_ms",   "Server Execution (ms)",     "B_server"),
+        ("avg_cpu",     "Average CPU (%)",           "C_cpu"),
+        ("avg_mem",     "Average RAM (MB)",          "D_ram"),
     ]
 
     for metric, ylabel, prefix in metrics:
         for variant, g_var in source.groupby("variant"):
             fig, ax = plt.subplots(figsize=(10, 4))
+
             for i, conc in enumerate(CONCURRENCY):
-                g = (g_var[g_var["concurrency"] == conc]
-                        .set_index("query_no")
-                        .reindex(QUERY_IDS)[metric])
-                ax.plot(QUERY_IDS, g,
-                        marker="o",
-                        color=COLOR_CMAP(0.35 + i*0.15),
-                        label=f"{conc} Threads")
+                g = (
+                    g_var[g_var["concurrency"] == conc]
+                    .set_index("query_no")
+                    .reindex(QUERY_IDS)[metric]
+                )
+                ax.plot(
+                    QUERY_IDS,
+                    g,
+                    marker="o",
+                    color=COLOR_CMAP(0.35 + i * 0.15),
+                    label=f"{conc} Threads",
+                )
 
             ax.set_title(f"{variant} – {ylabel} je Query")
             ax.set_xlabel("Query-ID")
@@ -132,6 +141,7 @@ def line_plots(source: pd.DataFrame, tag: str):
             ax.xaxis.set_major_locator(MaxNLocator(integer=True))
             ax.yaxis.grid(True, linestyle=":", alpha=.6)
             ax.legend(title="Concurrency")
+
             savefig(f"{prefix}{tag}_{variant}")
             plt.close(fig)
 
@@ -196,7 +206,7 @@ def grouped_bars(source: pd.DataFrame, tag: str) -> None:
         plt.close(fig)
 
 
-# ─────────────────────────  NEUER PLOT  ────────────────────────────────────
+# ─────────────────────────  BARS PLOT  ────────────────────────────────────
 def bars_conc_variant(df: pd.DataFrame, *, all_users: bool = False) -> None:
     """
     Balkendiagramm(e) Ø-Duration_ms  vs.  Concurrency  &  Variante.
@@ -265,6 +275,51 @@ def bars_conc_variant(df: pd.DataFrame, *, all_users: bool = False) -> None:
         _draw(ax, g, f"{users} Users", users)
 
 
+def bars_variant_users(df: pd.DataFrame) -> None:
+    """
+    Balken-Chart:   x-Achse = Variante (4 Cluster)
+                    Balken  = verschiedene User-Gruppen (1000, 10k, …)
+                    y-Achse = Ø duration_ms  (quer über alle Queries & Concurrency)
+
+    Der Mittelwert wird gebildet über *alle* Query-IDs, Wiederholungen und Threads.
+    """
+    base = (df.groupby(["variant", "users"], observed=True)["duration_ms"]
+              .mean()
+              .reset_index())
+    
+    var_order  = sorted(base["variant"].unique())   # 4 Varianten
+    user_order = sorted(base["users"].unique())     # z. B. 1000 / 10 000 / 100 000
+    cmap       = plt.get_cmap("tab10")
+    
+    bar_w   = 0.8 / len(user_order)                 # Cluster-Breite = 0.8
+    x_pos   = np.arange(len(var_order))             # 0,1,2,3
+    offset0 = -(len(user_order)-1)/2 * bar_w        # zentrieren
+    
+    fig, ax = plt.subplots(figsize=(8, 4))
+    
+    for j, users in enumerate(user_order):
+        ys = (
+            base[base["users"] == users]
+                .set_index("variant")
+                .reindex(var_order)["duration_ms"]
+                .to_numpy()
+        )
+        ax.bar(x_pos + offset0 + j*bar_w,
+               ys,
+               width=bar_w,
+               color=cmap(j),
+               label=f"{users:,} Users")            # 1 000 / 10 000 …
+    
+    ax.set_xlabel("Variante")
+    ax.set_ylabel("Average Duration (ms)")
+    ax.set_xticks(x_pos, var_order, rotation=15)
+    ax.yaxis.grid(True, linestyle=":", alpha=.6)
+    ax.set_title("Ø Duration – Variante vs. User-Größe")
+    ax.legend(title="User-Gruppe")
+    
+    savefig("F_variant_vs_users")
+    plt.close(fig)
+
 # ─────────────────────────  SUMMARY → CSV  ────────────────────────────
 def export_summary_csv(
     df: pd.DataFrame,
@@ -279,7 +334,8 @@ def export_summary_csv(
     out_dir.mkdir(exist_ok=True)
 
     # ───────── feste Reihenfolgen ─────────
-    METRIC_ORDER  = ["duration_ms", "avg_cpu", "avg_mem", "disk_mb"]
+    # End-to-end, reine Server-Zeit, CPU, RAM, Disk
+    METRIC_ORDER  = ["duration_ms", "server_ms", "avg_cpu", "avg_mem", "disk_mb"]
     VARIANT_ORDER = [
         "postgres_normal",
         "postgres_optimized",
@@ -349,7 +405,7 @@ print("\n▶  Plots für ALLE Runs zusammen")
 line_plots(pivot_all, tag="_all")
 grouped_bars(pivot_all, tag="_all")
 bars_conc_variant(df_raw, all_users=True)
-
+bars_variant_users(df_raw)
 
 # ───────────────────── Plots pro User-Größe (z. B. 100 / 1000 / 10000) ───────
 for users, g_user in pivot_by_user.groupby("users"):

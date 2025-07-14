@@ -24,7 +24,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
 from psycopg2.pool import ThreadedConnectionPool
 from neo4j import GraphDatabase
-from functools import partial
 from tqdm import tqdm
 import math
 import argparse
@@ -185,7 +184,7 @@ PG_NORMAL_QUERIES: Dict[Complexity, List[str]] = {
     # ───────── SIMPLE ─────────
     Complexity.SIMPLE: [
         # Gibt eine große Menge an Produktdaten zurück – Test für reine Leselast auf einer Einzel-Tabelle mit ORDER BY
-        "SELECT id, name, price, stock, created_at, updated_at FROM products ORDER BY id LIMIT 50000;",
+        "SELECT id, name, price, stock, created_at, updated_at FROM products ORDER BY id LIMIT 10000;",
 
         # Abruf aller Kategorienamen – kleinerer Umfang, geringer Aufwand
         "SELECT id, name FROM categories ORDER BY id LIMIT 5000;",
@@ -526,7 +525,7 @@ NEO_NORMAL_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 50000;
+        LIMIT 10000;
         """,
 
         # Liest maximal 1.000 Kategorien aus – Rückgabe von ID und Name
@@ -859,7 +858,7 @@ NEO_OPT_QUERIES = {
                p.created_at AS created_at,
                p.updated_at AS updated_at
         ORDER BY id
-        LIMIT 50000;
+        LIMIT 10000;
         """,
 
         # Alle Kategorien – alphabetisch sortiert nach ID
@@ -1177,7 +1176,7 @@ WARMUP_SLEEP = 0.05
 # Spaltenüberschriften der CSV-Datei zur Ergebnisspeicherung
 CSV_HEADER = [
     "db", "mode", "phase", "concurrency", "query_no", "repeat", "complexity",
-    "duration_ms","qps", "avg_cpu", "avg_mem",
+    "duration_ms", "server_ms", "qps", "avg_cpu", "avg_mem",
     "disk_mb", "statement", "result"
 ]
 
@@ -1244,7 +1243,7 @@ def _run_and_time(func, *a, **kw) -> float:
 
 
 def _log_csv(writer, *, phase, db, mode, conc, idx, repeat,
-             comp, dur, qps, avg_cpu, avg_mem,
+             comp, dur, server_ms, qps, avg_cpu, avg_mem,
              disk_mb, stmt, res):
     """
     Schreibt eine vollständige Benchmark-Zeile in die CSV-Ausgabedatei und loggt
@@ -1269,7 +1268,7 @@ def _log_csv(writer, *, phase, db, mode, conc, idx, repeat,
     """
     row = [
         db, mode, phase, conc, idx, repeat, comp.value,
-        f"{dur:.2f}", f"{qps:.2f}", 
+        f"{dur:.2f}", f"{server_ms:.2f}", f"{qps:.2f}", 
         f"{avg_cpu:.2f}", f"{avg_mem:.2f}",
         f"{disk_mb:.2f}",
         stmt.replace("\n", " "), json.dumps(res, ensure_ascii=False, default=str)
@@ -1277,54 +1276,11 @@ def _log_csv(writer, *, phase, db, mode, conc, idx, repeat,
     writer.writerow(row)
     logger.info(
         f"[{db.upper()}] {phase} | Mode: {mode} | Query #{idx} | "
-        f"Conc: {conc} | Time: {dur:.2f}ms | qps: {qps:.2f} | "
+        f"Conc: {conc} | Time: {dur:.2f}ms | Server: {server_ms:.2f}ms | qps: {qps:.2f} | "
         f"AVG CPU: {avg_cpu:.2f}% |"
         f"AVG Mem: {avg_mem:.2f}MB |"
         f"Disk: {disk_mb:.2f}MB |"
     )
-
-
-def _serialize_pg(cur, rows):
-    """
-    Serialisiert das Ergebnis eines PostgreSQL-Querys in ein standardisiertes Format.
-    
-    - Bei SELECT-Abfragen wird Anzahl und erste Zeile zurückgegeben.
-    - Bei Datenänderungen wird nur die betroffene Zeilenanzahl (`rowcount`) erfasst.
-    """
-    if cur.description:  # SELECT
-        result = {
-            "rows": len(rows),
-            "first": rows[0] if rows else None
-        }
-        logger.debug(f"[PG_SERIALIZE] SELECT-Ergebnis: {result}")
-        return result
-    result = {"rowcount": cur.rowcount}
-    logger.debug(f"[PG_SERIALIZE] Änderungsergebnis: {result}")
-    return result
-
-
-def _serialize_neo(records, summary):
-    """
-    Serialisiert ein Neo4j-Ergebnisobjekt in ein standardisiertes Format.
-
-    - Bei MATCH-Queries mit RETURN wird Anzahl und erster Datensatz ausgegeben.
-    - Bei CREATE/SET/DELETE-Operationen werden Veränderungsmetriken übergeben.
-    """
-    if records:  # MATCH … RETURN
-        result = {
-            "rows": len(records),
-            "first": records[0].data()
-        }
-        logger.debug(f"[NEO_SERIALIZE] MATCH-Ergebnis: {result}")
-        return result
-    cnt = summary.counters
-    result = {
-        "nodes_created": cnt.nodes_created,
-        "nodes_deleted": cnt.nodes_deleted,
-        "properties_set": getattr(cnt, "properties_set", 0)
-    }
-    logger.debug(f"[NEO_SERIALIZE] Veränderungsstatistik: {result}")
-    return result
 
 
 ###############################################################################
@@ -1337,7 +1293,21 @@ PG_CONN_KWARGS = dict(host="localhost", port=5432,
 
 # >>> globaler Connection-Pool; wird zentral in _pg_benchmark() erzeugt
 PG_POOL: ThreadedConnectionPool | None = None
+PG_FETCH_SIZE = 15000
 
+def _explain_exec_time(query: str) -> float:
+    conn = PG_POOL.getconn()
+    try:
+        with conn.cursor() as cur:
+            conn.autocommit = False          # TX nötig für SAVEPOINT
+            cur.execute("SAVEPOINT m")
+            cur.execute(f"EXPLAIN (ANALYZE, FORMAT JSON) {query}")
+            exec_ms = cur.fetchone()[0][0]["Execution Time"]   # float (ms)
+            cur.execute("ROLLBACK TO SAVEPOINT m")
+            conn.rollback()
+            return exec_ms
+    finally:
+        PG_POOL.putconn(conn)
 
 def _run_pg_query(query: str):
     """
@@ -1351,28 +1321,28 @@ def _run_pg_query(query: str):
     ➊ Verbindung aus dem Pool beziehen
     ➋ Autocommit aktivieren, um Transaktionen implizit zu committen
     ➌ Cursor öffnen, Query ausführen, Ergebnis ggf. abrufen
-    ➍ Ergebnis serialisieren via _serialize_pg()
-    ➎ Verbindung wieder dem Pool zurückgeben
+     Verbindung wieder dem Pool zurückgeben
 
     Fehler während der Ausführung werden geloggt und weitergereicht.
     """
-    conn = PG_POOL.getconn()           # ➊ Connection leihen
+    conn = PG_POOL.getconn()
     try:
-        conn.autocommit = True         # ➋ explizites COMMIT entfällt
         with conn.cursor() as cur:
-            logger.debug(f"[PG_QUERY] Start: {query.strip()}")
-            cur.execute(query)         # ➌ Query ausführen
-            rows = cur.fetchall() if cur.description else []  # Nur bei SELECT relevant
-            result = _serialize_pg(cur, rows)  # ➍ Ergebnisstruktur vereinheitlichen
-            logger.debug(f"[PG_QUERY] Ergebnis: {result}")
-            return result
-    except Exception as e:
-        logger.error(f"[PG_QUERY] Fehler bei Query: {query.strip()} | Fehler: {e}")
-        raise
-    finally:
-        PG_POOL.putconn(conn)          # ➎ Connection zurückgeben
-        logger.debug("[PG_QUERY] Verbindung zurückgegeben an Pool")
+            cur.itersize     = PG_FETCH_SIZE
+            conn.autocommit  = True
 
+            cur.execute(query)
+
+            first, rows = None, 0
+            for row in cur:                      # streamt paketweise
+                if first is None:
+                    first = row
+                rows += 1
+
+            return {"rows": rows,
+                    "first": first}               
+    finally:
+        PG_POOL.putconn(conn)
 
 def _pg_benchmark(queries: Dict[Complexity, List[str]],
                   container: str, mode: str, output: Path) -> None:
@@ -1431,7 +1401,7 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
                         # Warm-up-Ergebnisse loggen (ohne detaillierte Systemdaten)
                         _log_csv(w, phase="warmup", db="postgres", mode=mode,
                                 conc=conc, idx=idx, repeat=wrep, comp=comp,
-                                dur=warm_ms, avg_cpu=math.nan,
+                                dur=warm_ms, server_ms=math.nan, avg_cpu=math.nan,
                                 avg_mem=math.nan, qps=math.nan,
                                 disk_mb=get_docker_disk_mb(container),
                                 stmt=query, res={"note": "warmup"})
@@ -1439,17 +1409,16 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
                 # ---------- STEADY-RUNS ----------
                 for rep in range(1, REPETITIONS + 1):
                     start_stats = _read_cgroup_stats(cid)  # ➋
-
-                    # Zeitmessung + parallele Ausführung der Query
                     t0 = time.perf_counter_ns()
                     with ThreadPoolExecutor(max_workers=conc) as ex:
                         futs = [ex.submit(_run_pg_query, query) for _ in range(conc)]
-                        first_result = futs[0].result()  # erster Rückgabewert zur Logging-Ausgabe
+                        results = [ft.result() for ft in futs]
                     duration_ms = (time.perf_counter_ns() - t0) / 1_000_000
-
+                    first_result = results[0]                 # fürs Logging wie gehabt
+                    
                     end_stats = _read_cgroup_stats(cid)  # ➌
                     d = _delta(start_stats, end_stats)  # Delta-Werte berechnen
-
+                    server_ms = _explain_exec_time(query)
                     # Kennzahlen berechnen
                     qps = conc * 1000 / duration_ms
                     cpu_sec = d["cpu_usec"] / 1_000_000
@@ -1460,7 +1429,7 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
                     # Ergebnisse in CSV schreiben und in Logdatei ausgeben
                     _log_csv(w, phase="steady", db="postgres", mode=mode,
                              conc=conc, idx=idx, repeat=rep, comp=comp,
-                             dur=duration_ms, qps=qps,
+                             dur=duration_ms, server_ms=server_ms, qps=qps,
                              avg_cpu=avg_cpu, avg_mem=avg_mem,
                              disk_mb=disk_mb,
                              stmt=query, res=first_result)
@@ -1477,11 +1446,7 @@ def _pg_benchmark(queries: Dict[Complexity, List[str]],
 ###############################################################################
 
 NEO_BOLT_URI = "bolt://localhost:7687"
-FETCH_SIZE = 100
 
-def _open_session(drv):
-    # fetch_size greift sofort, ohne extra Objekt
-     return drv.session(fetch_size=FETCH_SIZE)
 
 def _run_neo_query(query: str, driver) -> dict:
     """
@@ -1490,7 +1455,6 @@ def _run_neo_query(query: str, driver) -> dict:
     Ablauf:
     - Erstellt eine Session über den bereitgestellten Neo4j-Driver
     - Führt die übergebene Cypher-Anfrage aus
-    - Wandelt das Ergebnis mithilfe von _serialize_neo() in ein standardisiertes Dictionary um
     - Gibt das serialisierte Ergebnis zurück
 
     Parameter:
@@ -1505,22 +1469,26 @@ def _run_neo_query(query: str, driver) -> dict:
     Fehlerbehandlung:
     - Alle Ausnahmen werden geloggt und erneut geworfen, damit sie im Benchmarking-Framework sichtbar bleiben
     """
-    logger.debug("[NEO_QUERY] starte")
+    logger.debug(f"[NEO_QUERY] Starte Query")
     try:
-        rows, first = 0, None
-        with _open_session(driver) as sess:          # einheitlicher Aufruf
-            result = sess.run(query)
-            for record in result:                    # streamend iterieren
-                rows += 1
-                if first is None:
-                    first = record.data()
-            summary = result.consume()
+        with driver.session(fetch_size=15000) as sess:
+            res       = sess.run(query)
+            row_count = 0
+            first_row = None
+            for rec in res:                       # streamt paketweise
+                if first_row is None:
+                    first_row = rec.data()        # komplette erste Zeile
+                row_count += 1
+            summary   = res.consume()
+            counters  = vars(summary.counters)    # <-- hier der Fix
+            server_ms = summary.result_consumed_after
 
-        return {
-            "rows": rows,
-            "first": first
-        }
-
+            return {
+                "rows":     row_count,
+                "first":    first_row,
+                "server_ms": server_ms,
+                "counters": counters              # dict mit nodes_created …
+            }
     except Exception:
         logger.exception("[NEO_QUERY] Fehler")
         raise
@@ -1556,7 +1524,11 @@ def _neo_benchmark(queries: Dict[Complexity, List[str]],
     logger.info("[NEO_BENCHMARK] starte, container=%s", container)
     cid = _cid_of(container)
     driver = GraphDatabase.driver(
-        NEO_BOLT_URI, auth=("neo4j", "superpassword55"))
+        NEO_BOLT_URI, auth=("neo4j", "superpassword55"),
+        max_connection_pool_size=max(CONCURRENCY_LEVELS),      
+        encrypted=False,                                       # spart Handshake
+        fetch_size=15000,                                         # Default für alle Sessions
+    )       
 
     with driver, open(output, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
@@ -1573,13 +1545,13 @@ def _neo_benchmark(queries: Dict[Complexity, List[str]],
                         logger.debug(f"[NEO_BENCHMARK] Warm-up {wrep}/{WARMUP_RUNS} | Query #{idx}")
                         warm_ms = _run_and_time(
                             _warmup_parallel,        # <- neue Signatur
-                            partial(_run_neo_query, driver=driver),          # Query-Runner
+                            lambda q: _run_neo_query(q, driver),         # Query-Runner
                             query,                   # SQL-String
                             conc                     # concurrency
                         )
                         _log_csv(w, phase="warmup", db="neo4j", mode=mode,
                                 conc=conc, idx=idx, repeat=wrep, comp=comp,
-                                dur=warm_ms, avg_cpu=math.nan,
+                                dur=warm_ms, server_ms=math.nan, avg_cpu=math.nan,
                                 avg_mem=math.nan, qps=math.nan,
                                 disk_mb=get_docker_disk_mb(container),
                                 stmt=query, res={"note": "warmup"})
@@ -1591,8 +1563,10 @@ def _neo_benchmark(queries: Dict[Complexity, List[str]],
                     with ThreadPoolExecutor(max_workers=conc) as ex:
                         futs = [ex.submit(_run_neo_query, query, driver)
                                 for _ in range(conc)]
-                        first_result = futs[0].result()
-                    duration_ms = (time.perf_counter_ns()-t0)/1_000_000
+                        results = [ft.result() for ft in futs]
+                    duration_ms = (time.perf_counter_ns() - t0) / 1_000_000
+                    first_result = results[0]              # fürs Logging wie gehabt
+
                     s1 = _read_cgroup_stats(cid)
                     d  = _delta(s0, s1)
                     qps          = conc * 1000 / duration_ms        # Concurrency / ms → / s
@@ -1604,7 +1578,7 @@ def _neo_benchmark(queries: Dict[Complexity, List[str]],
 
                     _log_csv(w, phase="steady", db="neo4j", mode=mode,
                              conc=conc, idx=idx, repeat=rep, comp=comp,
-                             dur=duration_ms, qps=qps,
+                             dur=duration_ms, server_ms=first_result["server_ms"], qps=qps,
                              avg_cpu=avg_cpu, avg_mem=avg_mem, disk_mb=disk_mb,
                              stmt=query, res=first_result)
 

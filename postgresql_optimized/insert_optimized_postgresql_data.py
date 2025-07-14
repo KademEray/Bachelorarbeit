@@ -6,8 +6,14 @@ import psycopg2
 from pathlib import Path
 from tqdm import tqdm
 from typing import List
+import csv, math, subprocess
+from pathlib import Path
+from datetime import datetime
 
 BATCH_SIZE = 500_000 # Größe der Batches für den Datenimport
+BASE_DIR = Path(__file__).resolve().parent        
+RESULTS_DIR = (BASE_DIR / ".." / "results").resolve()
+VOLUME_CSV  = RESULTS_DIR / "volume_sizes.csv"
 
 
 def fix_sequences(conn):
@@ -154,6 +160,60 @@ def insert_data_to_optimized_postgres(file_id: int, json_dir: str = "../output")
     print(f"\n✅ Alle Daten aus Datei 'users_{file_id}.json' wurden erfolgreich eingefügt.")
 
 
+def _pg_data_bytes(container: str, pg_datadir: str = "/var/lib/postgresql/data") -> int:
+    """
+    Liefert die belegten *Bytes* des PostgreSQL-Datenverzeichnisses im Container.
+
+    - `du -sb` = Anzahl belegter Bytes (ohne Rundung, rekursiv)
+    - Fällt auf SizeRootFs zurück, falls `du` scheitert
+    """
+    try:
+        out = subprocess.check_output(
+            ["docker", "exec", container, "du", "-sb", pg_datadir, "--apparent-size"],
+            text=True
+        ).split()[0]
+        return int(out)
+    except Exception as e:
+        # Fallback: SizeRootFs (wie bisher bei Neo4j)
+        try:
+            out = subprocess.check_output(
+                ["docker", "container", "inspect", "--size",
+                 "--format", "{{.SizeRootFs}}", container],
+                text=True
+            ).strip()
+            return int(out)
+        except Exception:            # letzter Fallback: NaN
+            print(f"⚠️  Konnte Volumen nicht ermitteln: {e}")
+            return math.nan
+
+def log_pg_volume(container: str,
+                  variant: str,
+                  n_users: int,
+                  out_csv: Path = (BASE_DIR / ".." / "results" / "volume_sizes.csv")) -> None:
+    """
+    Misst das DB-Volumen (Bytes → MB) und hängt eine Zeile an die Ergebnis-CSV an.
+
+    Spalten: timestamp | variant | users | volume_mb
+    """
+    bytes_used = _pg_data_bytes(container)
+    mb_used = None if math.isnan(bytes_used) else bytes_used / 1_000_000
+
+    out_csv.parent.mkdir(exist_ok=True, parents=True)
+    header = ("variant", "users", "volume_mb")
+
+    # Datei evtl. anlegen und Kopf schreiben
+    new_file = not out_csv.exists()
+    with out_csv.open("a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(header)
+        w.writerow([
+                    variant, n_users, f"{mb_used:.1f}" if mb_used is not None else "nan"])
+
+    print(f"💾  Volume-Größe protokolliert: {variant} | {n_users} | "
+          f"{mb_used:.1f} MB" if mb_used is not None else "n/a")
+    
+
 if __name__ == "__main__":
     # Initialisiert Argumentparser zur Übergabe von Kommandozeilenargumenten
     parser = argparse.ArgumentParser()
@@ -173,7 +233,13 @@ if __name__ == "__main__":
         default="../output",
         help="Ordnerpfad zur JSON-Datei"
     )
-
     # Parsed die Argumente und übergibt sie an die Hauptfunktion
     args = parser.parse_args()
+    file_id = args.file_id
     insert_data_to_optimized_postgres(args.file_id, args.json_dir)
+
+    log_pg_volume(
+    container="pg_test_optimized",   # Docker-Container-Name
+    variant="pg_optimized",          
+    n_users=file_id               
+)

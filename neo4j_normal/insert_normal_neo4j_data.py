@@ -7,7 +7,7 @@ import time               # Steuerung von Wartezeiten (z. B. bei Verbindungspr
 from pathlib import Path  # Plattformunabhängiges Arbeiten mit Dateipfaden
 import re                 # Reguläre Ausdrücke für Textverarbeitung
 import shutil             # Datei- und Verzeichnisoperationen (z. B. löschen)
-
+import os, math, sys
 from neo4j import GraphDatabase                           # Offizieller Neo4j-Python-Treiber
 from neo4j.exceptions import ServiceUnavailable           # Exception für Verbindungsausfälle
 
@@ -17,6 +17,9 @@ CSV_DIR = Path(__file__).resolve().parent / "import"  # Verzeichnis für importi
 
 CONTAINER_NAME = "neo5_test_normal"                       # Containername zur eindeutigen Identifikation
 IMAGE_NAME = "neo5-normal"                                # Name des zu verwendenden Docker-Images für Neo4j
+BASE_DIR = Path(__file__).resolve().parent
+RESULTS_DIR = (BASE_DIR / ".." / "results").resolve()
+VOLUME_CSV  = RESULTS_DIR / "volume_sizes.csv"
 
 
 # === Tabellenstruktur (Nodes) =============================================
@@ -529,6 +532,46 @@ def reset_database_directory():
     db_path.mkdir(parents=True, exist_ok=True)
 
 
+def _folder_size_mb(path: Path) -> float:
+    """
+    Liefert die Größe eines Ordners in MB.
+    1️⃣  Versuch via `du -sb`, weil es bei Docker-Setups praktisch immer vorhanden ist.
+    2️⃣  Fallback: rekursiv per os.walk – funktioniert auch auf Windows, ist aber langsamer.
+    """
+    try:
+        size_bytes = int(subprocess.check_output(["du", "-sb", str(path)]).split()[0])
+    except Exception:                                      # z. B. 'du' nicht verfügbar
+        size_bytes = 0
+        for root, _, files in os.walk(path):
+            size_bytes += sum((Path(root) / f).stat().st_size for f in files)
+    return round(size_bytes / (1024 * 1024), 1)            # eine Nachkommastelle
+
+def log_volume_size(variant: str, users: int,
+                    volume_path: Path,
+                    out_csv: Path = (BASE_DIR / ".." / "results" / "volume_sizes.csv")) -> None:
+    """
+    Hängt eine Zeile  variant,users,disk_mb  an die Ergebnis-CSV an.
+
+    Parameters
+    ----------
+    variant      : Kurzbezeichnung (z. B. 'pg_normal', 'neo_optimized')
+    users        : Zahl der in dieser Runde importierten Users
+    volume_path  : Host-Pfad des gemounteten Volumes (Ordner, nicht Container-ID!)
+    out_csv      : Zieldatei; wird angelegt, falls sie noch nicht existiert
+    """
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    disk_mb = _folder_size_mb(volume_path)
+
+    # Datei neu anlegen → Header schreiben; sonst anhängen
+    write_header = not out_csv.exists()
+    with out_csv.open("a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if write_header:
+            w.writerow(["variant", "users", "disk_mb"])
+        w.writerow([variant, users, disk_mb])
+    print(f"💾  Volume-Größe protokolliert: {variant} | {users} | {disk_mb} MB")
+
+
 def main():
     # Initialisiert einen Argumentparser für Kommandozeilenargumente
     parser = argparse.ArgumentParser()
@@ -559,6 +602,12 @@ def main():
 
     # 6. Startet die Neo4j-Datenbank im Docker-Container und wartet auf vollständige Verfügbarkeit
     start_neo4j_container()
+
+    # 7. Disk-Footprint des frischen Volumes festhalten
+    data_volume_path = Path(__file__).resolve().parent / "neo4j_data"
+    log_volume_size(variant="neo_normal",
+                    users=args.file_id,           
+                    volume_path=data_volume_path)
 
 # Stellt sicher, dass die main()-Funktion nur ausgeführt wird,
 # wenn das Skript direkt gestartet wird (nicht bei Modulimport)
