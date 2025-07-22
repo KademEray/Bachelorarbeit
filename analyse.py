@@ -276,48 +276,38 @@ def bars_conc_variant(df: pd.DataFrame, *, all_users: bool = False) -> None:
 
 
 def bars_variant_users(df: pd.DataFrame) -> None:
-    """
-    Balken-Chart:   x-Achse = Variante (4 Cluster)
-                    Balken  = verschiedene User-Gruppen (1000, 10k, …)
-                    y-Achse = Ø duration_ms  (quer über alle Queries & Concurrency)
-
-    Der Mittelwert wird gebildet über *alle* Query-IDs, Wiederholungen und Threads.
-    """
-    base = (df.groupby(["variant", "users"], observed=True)["duration_ms"]
+    base = (df.groupby(["variant", "users"], observed=True)["volume_mb"]   # Ø-Volumen
               .mean()
               .reset_index())
-    
-    var_order  = sorted(base["variant"].unique())   # 4 Varianten
-    user_order = sorted(base["users"].unique())     # z. B. 1000 / 10 000 / 100 000
-    cmap       = plt.get_cmap("tab10")
-    
-    bar_w   = 0.8 / len(user_order)                 # Cluster-Breite = 0.8
-    x_pos   = np.arange(len(var_order))             # 0,1,2,3
-    offset0 = -(len(user_order)-1)/2 * bar_w        # zentrieren
-    
+
+    var_order  = sorted(base["variant"].unique())      # pg_normal … neo_optimized
+    user_order = sorted(base["users"].unique())        # 1 000 / 10 000 / …
+    bar_w      = 0.8 / len(user_order)                 # Clusterbreite
+    x_pos      = np.arange(len(var_order))
+    offset0    = -(len(user_order)-1)/2 * bar_w
+
     fig, ax = plt.subplots(figsize=(8, 4))
-    
+    cmap = plt.get_cmap("tab10")
+
     for j, users in enumerate(user_order):
-        ys = (
-            base[base["users"] == users]
+        ys = (base[base["users"] == users]
                 .set_index("variant")
-                .reindex(var_order)["duration_ms"]
-                .to_numpy()
-        )
+                .reindex(var_order)["volume_mb"]
+                .to_numpy())
         ax.bar(x_pos + offset0 + j*bar_w,
                ys,
                width=bar_w,
                color=cmap(j),
-               label=f"{users:,} Users")            # 1 000 / 10 000 …
-    
+               label=f"{users:,} Users")
+
     ax.set_xlabel("Variante")
-    ax.set_ylabel("Average Duration (ms)")
+    ax.set_ylabel("Volume (MB)")
     ax.set_xticks(x_pos, var_order, rotation=15)
     ax.yaxis.grid(True, linestyle=":", alpha=.6)
-    ax.set_title("Ø Duration – Variante vs. User-Größe")
-    ax.legend(title="User-Gruppe")
-    
-    savefig("F_variant_vs_users")
+    ax.set_title("Datenbank-Volume – Variante vs. User-Größe")
+    ax.legend(title="User-Gruppe", fontsize=8)
+
+    savefig("F_variant_vs_users_volume")
     plt.close(fig)
 
 # ─────────────────────────  SUMMARY → CSV  ────────────────────────────
@@ -327,52 +317,62 @@ def export_summary_csv(
     decimals: int = 1,
 ) -> None:
     """
-    • summary_table.csv   – Ø-Werte (plus Gesamtzeile 'ALL')
-    • per_query_table.csv – dieselben Metriken pro Query
-      Reihenfolge: Duration → CPU → RAM → Disk
+    • summary_table.csv        – Ø-Werte (plus Gesamtzeile 'ALL')
+    • per_query_table.csv      – Ø je Query-ID
+    • per_complexity_table.csv – Ø je Komplexitätsgruppe
+                                  (Easy, Medium, …, Delete)
+    Reihenfolge der Metriken: Duration → ServerTime → CPU → RAM → Disk
     """
     out_dir.mkdir(exist_ok=True)
 
     # ───────── feste Reihenfolgen ─────────
-    # End-to-end, reine Server-Zeit, CPU, RAM, Disk
     METRIC_ORDER  = ["duration_ms", "server_ms", "avg_cpu", "avg_mem", "disk_mb"]
-    VARIANT_ORDER = [
-        "postgres_normal",
-        "postgres_optimized",
-        "neo4j_normal",
-        "neo4j_optimized",
-    ]
+    VARIANT_ORDER = ["postgres_normal", "postgres_optimized",
+                     "neo4j_normal",   "neo4j_optimized"]
 
-    # Variantenspalte in geordnete Kategorie umwandeln  ⟶   Pivot hält die Reihenfolge
     df = df.copy()
     df["variant"] = pd.Categorical(df["variant"],
                                    categories=VARIANT_ORDER,
                                    ordered=True)
 
-    # --------------------------------------------------
+    # ────────────────────────────────────────────────────────────────────────
+    # 0️⃣  Hilfsspalte »complexity« aus query_no ableiten
+    # ----------------------------------------------------------------------
+    def _complexity(q):
+        if   1  <= q <=  3:  return "easy"
+        elif 4  <= q <=  6:  return "medium"
+        elif 7  <= q <=  9:  return "complex"
+        elif 10 <= q <= 12:  return "very_complex"
+        elif 13 <= q <= 16:  return "create"
+        elif 17 <= q <= 20:  return "update"
+        else:                return "delete"        # 21–24
+    df["complexity"] = df["query_no"].astype(int).map(_complexity)
+
+    COMPLEXITY_ORDER = ["easy", "medium", "complex",
+                        "very_complex", "create", "update", "delete"]
+    df["complexity"] = pd.Categorical(df["complexity"],
+                                      categories=COMPLEXITY_ORDER,
+                                      ordered=True)
+
+    # ────────────────────────────────────────────────────────────────────────
     # 1️⃣  SUMMARY  (Ø über alle Queries & Wiederholungen)
-    # --------------------------------------------------
+    # ----------------------------------------------------------------------
     summary = (
-        df.groupby(["users", "concurrency", "variant"],
-                   observed=True)
-          .agg({m: ("mean") for m in METRIC_ORDER})
+        df.groupby(["users", "concurrency", "variant"], observed=True)
+          .agg({m: "mean" for m in METRIC_ORDER})
           .round(decimals)
           .pivot_table(index   = ["users", "concurrency"],
                        columns = "variant",
                        values  = METRIC_ORDER,
-                       sort=False,      # ⇦ behält METRIC_ORDER & VARIANT_ORDER
-                       observed=True)              
+                       sort=False,
+                       observed=True)
     )
-
-    # Spaltennamen flatten:  duration_ms_postgres_normal …
     summary.columns = [f"{m}_{v}" for m, v in summary.columns.to_flat_index()]
     summary = summary.reset_index()
 
     # Gesamtzeile 'ALL'
     overall = (summary.drop(columns=["users", "concurrency"])
-                      .mean(numeric_only=True)
-                      .to_frame().T
-                      .round(decimals))
+                      .mean(numeric_only=True).to_frame().T.round(decimals))
     overall.insert(0, "concurrency", "")
     overall.insert(0, "users", "ALL")
     summary = pd.concat([summary, overall], ignore_index=True)
@@ -380,13 +380,12 @@ def export_summary_csv(
     summary.to_csv(out_dir / "summary_table.csv", index=False)
     print(f"💾 summary_table.csv geschrieben → {out_dir}")
 
-    # --------------------------------------------------
-    # 2️⃣  PER-QUERY-TABELLE  (Ausreißer sichtbar)
-    # --------------------------------------------------
+    # ────────────────────────────────────────────────────────────────────────
+    # 2️⃣  PER-QUERY-TABELLE  (Ausreißer)
+    # ----------------------------------------------------------------------
     per_q = (
-        df.groupby(["users", "concurrency", "variant", "query_no"],
-                   observed=True)
-          .agg({m: ("mean") for m in METRIC_ORDER})
+        df.groupby(["users", "concurrency", "variant", "query_no"], observed=True)
+          .agg({m: "mean" for m in METRIC_ORDER})
           .round(decimals)
           .pivot_table(index   = ["users", "concurrency", "query_no"],
                        columns = "variant",
@@ -396,16 +395,34 @@ def export_summary_csv(
     )
     per_q.columns = [f"{m}_{v}" for m, v in per_q.columns.to_flat_index()]
     per_q = per_q.reset_index()
-
     per_q.to_csv(out_dir / "per_query_table.csv", index=False)
     print(f"💾 per_query_table.csv geschrieben → {out_dir}")
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 3️⃣  PER-COMPLEXITY-TABELLE  (Easy … Delete)
+    # ----------------------------------------------------------------------
+    per_c = (
+        df.groupby(["users", "concurrency", "variant", "complexity"], observed=True)
+          .agg({m: "mean" for m in METRIC_ORDER})
+          .round(decimals)
+          .pivot_table(index   = ["users", "concurrency", "complexity"],
+                       columns = "variant",
+                       values  = METRIC_ORDER,
+                       sort=False,
+                       observed=True)
+    )
+    per_c.columns = [f"{m}_{v}" for m, v in per_c.columns.to_flat_index()]
+    per_c = per_c.reset_index()
+    per_c.to_csv(out_dir / "per_complexity_table.csv", index=False)
+    print(f"💾 per_complexity_table.csv geschrieben → {out_dir}")
 
 # ───────────────────── Gesamtdurchschnitt (alle Users) ───────────────────────
 print("\n▶  Plots für ALLE Runs zusammen")
 line_plots(pivot_all, tag="_all")
 grouped_bars(pivot_all, tag="_all")
 bars_conc_variant(df_raw, all_users=True)
-bars_variant_users(df_raw)
+vol_df = pd.read_csv("results/volume_sizes.csv")
+bars_variant_users(vol_df)
 
 # ───────────────────── Plots pro User-Größe (z. B. 100 / 1000 / 10000) ───────
 for users, g_user in pivot_by_user.groupby("users"):

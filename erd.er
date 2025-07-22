@@ -1,0 +1,98 @@
+[users]
+    *id {label:"INTEGER"}
+    created_at {label:"TIMESTAMP"}
+    email {label:"VARCHAR"}
+    name {label:"VARCHAR"}
+[addresses]
+    *id {label:"INTEGER"}
+    city {label:"VARCHAR"}
+    country {label:"VARCHAR"}
+    is_primary {label:"BOOLEAN"}
+    street {label:"VARCHAR"}
+    user_id {label:"INTEGER"}
+    zip {label:"VARCHAR"}
+[products]
+    *id {label:"INTEGER"}
+    created_at {label:"TIMESTAMP"}
+    description {label:"TEXT"}
+    name {label:"VARCHAR"}
+    price {label:"NUMERIC"}
+    stock {label:"INTEGER"}
+    updated_at {label:"TIMESTAMP"}
+[product_categories]
+    *category_id {label:"INTEGER"}
+    *product_id {label:"INTEGER"}
+[categories]
+    *id {label:"INTEGER"}
+    name {label:"VARCHAR"}
+[orders]
+    *id {label:"INTEGER"}
+    created_at {label:"TIMESTAMP"}
+    status {label:"VARCHAR"}
+    total {label:"NUMERIC"}
+    updated_at {label:"TIMESTAMP"}
+    user_id {label:"INTEGER"}
+[order_items]
+    *id {label:"INTEGER"}
+    order_id {label:"INTEGER"}
+    price {label:"NUMERIC"}
+    product_id {label:"INTEGER"}
+    quantity {label:"INTEGER"}
+[payments]
+    *id {label:"INTEGER"}
+    order_id {label:"INTEGER"}
+    paid_at {label:"TIMESTAMP"}
+    payment_method {label:"VARCHAR"}
+    payment_status {label:"VARCHAR"}
+[reviews]
+    *id {label:"INTEGER"}
+    comment {label:"TEXT"}
+    created_at {label:"TIMESTAMP"}
+    product_id {label:"INTEGER"}
+    rating {label:"INTEGER"}
+    user_id {label:"INTEGER"}
+[cart_items]
+    *id {label:"INTEGER"}
+    added_at {label:"TIMESTAMP"}
+    product_id {label:"INTEGER"}
+    quantity {label:"INTEGER"}
+    user_id {label:"INTEGER"}
+[shipments]
+    *id {label:"INTEGER"}
+    carrier {label:"VARCHAR"}
+    delivered_at {label:"TIMESTAMP"}
+    order_id {label:"INTEGER"}
+    shipped_at {label:"TIMESTAMP"}
+    tracking_number {label:"VARCHAR"}
+[wishlists]
+    *product_id {label:"INTEGER"}
+    *user_id {label:"INTEGER"}
+    created_at {label:"TIMESTAMP"}
+[product_views]
+    *id {label:"INTEGER"}
+    product_id {label:"INTEGER"}
+    user_id {label:"INTEGER"}
+    viewed_at {label:"TIMESTAMP"}
+[product_purchases]
+    *id {label:"INTEGER"}
+    product_id {label:"INTEGER"}
+    purchased_at {label:"TIMESTAMP"}
+    user_id {label:"INTEGER"}
+users."id" ?--* addresses."user_id"
+products."id" 1--* product_categories."product_id"
+categories."id" 1--* product_categories."category_id"
+users."id" ?--* orders."user_id"
+products."id" ?--* order_items."product_id"
+orders."id" ?--* order_items."order_id"
+orders."id" ?--* payments."order_id"
+products."id" ?--* reviews."product_id"
+users."id" ?--* reviews."user_id"
+products."id" ?--* cart_items."product_id"
+users."id" ?--* cart_items."user_id"
+orders."id" ?--* shipments."order_id"
+products."id" 1--* wishlists."product_id"
+users."id" 1--* wishlists."user_id"
+users."id" ?--* product_views."user_id"
+products."id" ?--* product_views."product_id"
+users."id" ?--* product_purchases."user_id"
+products."id" ?--* product_purchases."product_id"
