@@ -77,9 +77,19 @@ Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* pe
 
 ```
 results/
-└─ {users}_{variant}_{round}_{repetitions}_{warmups}_results.csv
+├─ *_results.csv              # Rohdaten pro Lauf: users, variant, round, repetitions, warmups
+├─ summary_table.csv          # Durchschnittswerte über alle Abfragen + Gesamtzeile ALL
+├─ per_query_table.csv        # Durchschnittswerte pro Einzel-Query (Ausreißer sichtbar)
+├─ per_complexity_table.csv   # Durchschnittswerte pro Komplexitätsgruppe (easy…delete)
+├─ constellation_stats.csv    # Mittelwert, Std-Abw. & Varianz je Konstellation (users, concurrency, variant)
+├─ complexity_stats.csv       # Mittelwert, Std-Abw. & Varianz je Komplexitätsgruppe
+├─ ci_duration.csv            # 95 %-Konfidenzintervalle für duration_ms je Konstellation
+├─ significance_duration.csv  # Paarweise Welch-t-Tests (p-Wert & signifikant?) je Konstellation
+└─ volume_sizes.csv           # Gemessene Datenbank-Volumina (MB) je users & variant
+
 plots/
 └─ <prefix>_<variant>.png
+
 logs/
 └─ benchmark.log
 ```
