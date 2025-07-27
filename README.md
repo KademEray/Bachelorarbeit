@@ -1,161 +1,143 @@
 # Performancevergleich von PostgreSQL und Neo4j in typischen eCommerce-Webseiten 
 **Bachelorarbeit**
 
-|                             |                                            |
-|-----------------------------|--------------------------------------------|
-| **Autor**                  | Eray Kadem |
-| **Bearbeitungszeitraum**   | (wird nach Abschluss eingetragen) |
-| **Erstgutachter\***        | Prof. Dr. Arif Wider |
-| **Zweitgutachter\***       | Lucas Larisch |
-| **Repository‑Lizenz**      | MIT |
-| **Daten- & Ergebnis-Lizenz** | CC BY 4.0 |
-| **Kontakt**                | bitte Issue auf GitHub eröffnen |
+| Feld                           | Inhalt                                                      |
+|--------------------------------|-------------------------------------------------------------|
+| **Autor**                      | Eray Kadem                                                  |
+| **Bearbeitungs­zeitraum**      | 30.5.2025 - 08.08.2025       |
+| **Erstgutachter**              | Prof. Dr. Arif Wider                                        |
+| **Zweitgutachter**             | Lucas Larisch                                               |
+| **Repository-Lizenz**          | MIT                                                         |
+| **Daten- & Ergebnis-Lizenz**   | CC BY 4.0                                                   |
+| **Kontakt**                    | Bitte ein GitHub-Issue eröffnen                            |
 
 ---
 
-## 1  Projektzusammenfassung – *Was?*
+## 1 Projekt­zusammenfassung – *Was wurde untersucht?*
 
-Diese Arbeit untersucht, **wie sich relationale (PostgreSQL 17.5) und graphbasierte (Neo4j 5.26.6) Datenbanken** bei einem realistischen E‑Commerce‑Workload verhalten.  
-Dazu werden
+Diese Arbeit vergleicht **relationale Datenbanken (PostgreSQL 17.5)** mit **Graphdaten­banken (Neo4j 5.26.6)** unter realitätsnaher Shop­last. Dafür werden  
 
-* **synthetische Shopdaten** in zwei Größenordnungen erzeugt (100 & 1000 Nutzer),
-* identische CRUD‑Workloads (24 Queries × 4 Concurrency‑Stufen) ausgeführt und
-* Metriken wie Latenz, CPU, RAM erfasst.
-
----
-
-## 2  Datenherkunft – *Wer, Woher?*
-
-| Quelle | Lizenz/Identifier |
-|--------|------------------|
-| **Roh-Produktdaten:** Amazon UK Products Dataset 2023 (Kaggle) | Open Data Commons Attribution (ODC-By) v1.0 |
-| **Generierte Shopdaten:** `generate_data.py` | MIT |
-| **Benchmark‑CSVs & Plots:** automatisch erzeugt | MIT |
-
-**Zitation des Datensatzes**
-
-> Saniczka, A. (2023): *Amazon UK Products Dataset 2023.*  
-> Bereitgestellt über Kaggle.  
-> Lizenz: **Open Data Commons Attribution License (ODC-By) v1.0**  
-> URL: <https://www.kaggle.com/datasets/asaniczka/amazon-uk-products-dataset-2023>
-
-Alle Generierte Shopdaten sind **vollständig synthetisch** und enthalten **keine personenbezogenen Informationen**.
+* **synthetische Nutz-, Bestell- und Produkt­daten** in drei Größenordnungen (1.000 / 10.000 / 100.000 Nutzer) erzeugt,  
+* **24 CRUD-/Analyse-Queries** bei vier Parallelitäts­stufen (1 / 3 / 5 / 10 Threads) ausgeführt und  
+* **Latenz, CPU, RAM und belegter Speicher** automatisiert aufgezeichnet.
 
 ---
 
-## 3  Datenformate & ‑umfang – *Welche, Wie viel?*
+## 2 Daten­herkunft – *Wer liefert welche Rohdaten?*
 
-| Artefakt | Format 
-|----------|--------
-| Shop‑JSON je Nutzer‑Skalierung | `.json` 
-| Import‑CSV (PostgreSQL / Neo4j) | `.csv` 
-| Benchmark‑Ergebnisse | `.csv` 
-| Auswertungs‑Plots | `.png` 
+| Quelle | Lizenz / Identifier |
+|--------|--------------------|
+| **Roh-Produktdaten**: *Amazon UK Products Dataset 2023* (Kaggle) | ODC-By 1.0 |
+| **Generierte Shopdaten** (*generate_data.py*) | MIT |
+| **Benchmark-CSVs & Plots** (automatisch erzeugt) | MIT |
 
----
+> **Zitation des externen Datensatzes**  
+> Saniczka, A. (2023). *Amazon UK Products Dataset 2023* [Data set]. Kaggle.  
+> <https://www.kaggle.com/datasets/asaniczka/amazon-uk-products-dataset-2023>  
+> Lizenz: ODC-By 1.0
 
-## 4  Werkzeuge, Versionen & Hardware
-
-| Einsatzbereich                 | Tool / Bibliothek            | Version |
-|--------------------------------|------------------------------|---------|
-| **Datengenerierung**           | Python (CPython)             | 3.11.9 |
-|                                | `pandas`                     | 2.2.3   |
-|                                | `Faker`                      | 37.3.0  |
-| **Datenbanken&nbsp;(Docker)**  | PostgreSQL                   | 17.5    |
-|                                | Neo4j                        | 5.26.6  |
-| **DB-Treiber**                 | `psycopg2-binary`            | 2.9.10  |
-|                                | `neo4j` (Python-Driver)      | 5.28.1  |
-| **Benchmarking**               | `concurrent.futures`         | builtin |
-|                                | Docker CLI / Engine          | ≥ 24    |
-| **Auswertung & Visualisierung**| `pandas`                     | 2.2.3   |
-|                                | `numpy`                      | 1.26.4  |
-|                                | `matplotlib`                 | 3.9.4   |
-| **Utilities**                  | `tqdm` (Progress-Bars)       | 4.67.1  |
-
-Die vollständige, exakt versionierte Abhängigkeitsliste liegt in `requirements.txt`
-
-# Hardware- & Software-Umgebung
-| Komponente       | Wert |
-|------------------|------|
-| **CPU**          | AMD Ryzen 5 7600X - 6 C / 12 T, max 4.7 GHz |
-| **RAM**          | 32 GB DDR5 |
-| **Disk 1**       | KIOXIA EXCERIA PRO SSD – 931 GB |
-| **Disk 2**       | KIOXIA EXCERIA PRO SSD – 931 GB |
-| **Betriebssystem** | Windows 11 (22H2) |
-| **Docker Engine** | 28.2.2, (build e6534b4) |
+Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* personen­bezogenen Daten.
 
 ---
 
-## 5  Ablage‑ & Benennungskonvention – *Wo?*
+## 3 Daten­formate & -umfang – *Welche Dateien entstehen?*
+
+| Artefakt                              | Format      | typische Größe |
+|---------------------------------------|-------------|----------------|
+| Shop-Export je Skalierung             | `.json`     | ≈ 40 – 400 MB |
+| Import­dateien (PostgreSQL / Neo4j)   | `.csv`      | ≈ 30 – 300 MB |
+| Benchmark-Ergebnisse                  | `.csv`      | ≈ 5 – 25 MB  |
+| Auswertungs­grafiken                  | `.png`      | < 500 kB pro Plot |
+
+---
+
+## 4 Werkzeuge, Versionen & Hardware
+
+| Kategorie                     | Tool / Bibliothek          | Version |
+|-------------------------------|----------------------------|---------|
+| **Datengenerierung**          | Python 3.11.9, `pandas` 2.2.3, `faker` 37.3.0 |
+| **Container-DBs**             | PostgreSQL 17.5, Neo4j 5.26.6 |
+| **Treiber**                   | `psycopg2-binary` 2.9.10, `neo4j` 5.28.1 |
+| **Benchmark**                 | `concurrent.futures`, Docker ≥ 24 |
+| **Visualisierung**            | `matplotlib` 3.9.4, `numpy` 1.26.4 |
+| **Hilfstools**                | `tqdm` 4.67.1 |
+
+**Hardware (Testhost)**  
+
+| Komponente      | Spezifikation |
+|-----------------|---------------|
+| CPU             | AMD Ryzen 5 7600X - 6 C / 12 T, max 4.7 GHz |
+| RAM             | 32 GB DDR5 |
+| SSD 1 / 2       | KIOXIA EXCERIA PRO, je ≈ 931 GB |
+| Betriebssystem  | Windows 11 (22H2) + Docker Engine 28.2.2 (build e6534b4) |
+
+---
+
+## 5 Ablage- & Benennungs­schema – *Wo liegt was?*
 
 ```
 results/
 └─ {users}_{variant}_{round}_{repetitions}_{warmups}_results.csv
 plots/
-└─ <Prefix>_<Variante>.png          # siehe analyse.py
+└─ <prefix>_<variant>.png
 logs/
 └─ benchmark.log
 ```
-
-*`variant`* ∈ {`pg_normal`, `pg_opt`, `neo_normal`, `neo_opt`}
-
----
-
-## 6  Qualitätssicherung
-
-| Schritt | Maßnahme |
-|---------|----------|
-| **Reproduzierbare Umgebung** | feste Docker‑Tags & `requirements.txt` |
-| **Validierung** | Konsistenz‑Checks der Datengeneratoren |
-| **Logging** | vollständige Laufzeit‑Logs in `logs/` |
-
+`variant` ∈ `pg_normal`, `pg_opt`, `neo_normal`, `neo_opt`
 
 ---
 
-## 7  Datenschutz
+## 6 Qualitäts­sicherung
 
-Alle Daten sind synthetisch ➜ **keine DSGVO‑Relevanz**.
+| Schritt                     | Maßnahme |
+|-----------------------------|----------|
+| Reproduzierbare Umgebung    | feste Docker-Tags & `requirements.txt` |
+| Datenvalidierung            | Plausi-Checks im Datengenerator |
+| Laufzeit-Logging            | vollständige Logs in `logs/` |
 
 ---
 
-## 8  Installation & Schnellstart
+## 7 Datenschutz
+
+Es werden ausschließlich **synthetische Daten** verwendet → **keine DSGVO-Relevanz**.
+
+---
+
+## 8 Installation & Schnell­start
 
 ```bash
-# Repository klonen
 git clone https://github.com/KademEray/Bachelorarbeit.git
 cd Bachelorarbeit
 
-# Roh‑Produktdaten von Kaggle laden, entpacken und CSV nach ./product_data/ kopieren
+# Produktdatensatz (CSV) nach ./product_data/ legen
 # https://www.kaggle.com/datasets/asaniczka/amazon-uk-products-dataset-2023
 
-# Virtuelle Umgebung anlegen
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scriptsctivate
-
-# Abhängigkeiten installieren
+source .venv/bin/activate      # Windows: .venv\Scriptsctivate
 pip install -r requirements.txt
 
-# Kompletten Workflow ausführen (ca. 15‑20 Minuten)
+# vollständigen Workflow (≈ 15–20 Min.) starten
 python main.py
+
 ```
 
-*Mess‑CSVs erscheinen in `results/`, Diagramme nach `python analyse.py` in `plots/`.*
+*Ergebnisse landen in `results/`, Plots in `plots/`.*
 
 ---
 
-## 9  Lizenz‑ & Zugriffshinweise
+## 9 Lizenzen & Nachnutzung
 
-* **Code:** MIT‑Lizenz (siehe `LICENSE`)
-* **Benchmark‑Ergebnisse & Plots:** CC BY 4.0  
-  Bitte bei Weiterverwendung Autor & Quelle angeben.
-* **Externe Rohdaten:** jeweilige Ursprungs‑Lizenz (siehe Kaggle‑Link)
-
----
-
-## 10  Weiterführende Ressourcen
-
-* FitForFDM‑Checkliste „Software‑Code‑Dokumentation / Abschlussarbeit“  
-* Offizielle Dokumentation zu PostgreSQL 17 & Neo4j 5
+* **Code**: MIT  
+* **Benchmark-Ergebnisse & Plots**: CC BY 4.0 – bitte Autor & Quelle nennen.  
+* **Externe Rohdaten**: siehe jeweilige Ursprungs­lizenz (Kaggle-Link).
 
 ---
 
+## 10 Weiterführende Ressourcen
+
+* FitForFDM-Checkliste „Software‑Code‑Dokumentation / Abschlussarbeit“
+* Offizielle Dokumentation: PostgreSQL 17 • Neo4j 5  
+
+---
+
+> Letzte Aktualisierung: 27.07.2025

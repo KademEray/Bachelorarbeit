@@ -103,14 +103,14 @@ def run_once(n_users: int, rounds: int) -> None:
                             "--json-dir", "./output"],
                            check=True)
 
-        # with timeit("performance_benchmark.py"):
-        #     subprocess.run([sys.executable, "-u", str(BENCH),
-        #                     "--variant", "pg_normal",
-        #                     "--users", str(n_users),
-        #                     "--round", str(rounds),
-        #                     "--repetitions", str(repetitions),
-        #                     "--warmups", str(warmups)],
-        #                    check=True)
+        with timeit("performance_benchmark.py"):
+            subprocess.run([sys.executable, "-u", str(BENCH),
+                            "--variant", "pg_normal",
+                            "--users", str(n_users),
+                            "--round", str(rounds),
+                            "--repetitions", str(repetitions),
+                            "--warmups", str(warmups)],
+                           check=True)
 
         stop_normal_postgres_container()
         delete_normal_postgres_image()
@@ -129,14 +129,14 @@ def run_once(n_users: int, rounds: int) -> None:
                             "--json-dir", "./output"],
                            check=True)
 
-        # with timeit("performance_benchmark.py"):
-        #     subprocess.run([sys.executable, "-u", str(BENCH),
-        #                     "--variant", "pg_opt",
-        #                     "--users", str(n_users),
-        #                     "--round", str(rounds),
-        #                     "--repetitions", str(repetitions),
-        #                     "--warmups", str(warmups)],
-        #                    check=True)
+        with timeit("performance_benchmark.py"):
+            subprocess.run([sys.executable, "-u", str(BENCH),
+                            "--variant", "pg_opt",
+                            "--users", str(n_users),
+                            "--round", str(rounds),
+                            "--repetitions", str(repetitions),
+                            "--warmups", str(warmups)],
+                           check=True)
 
 
         stop_optimized_postgres_container()
@@ -156,14 +156,14 @@ def run_once(n_users: int, rounds: int) -> None:
                             "--json-dir", "./output"],
                            check=True)
 
-        # with timeit("performance_benchmark.py"):
-        #     subprocess.run([sys.executable, "-u", str(BENCH),
-        #                     "--variant", "neo_normal",
-        #                     "--users", str(n_users),
-        #                     "--round", str(rounds),
-        #                     "--repetitions", str(repetitions),
-        #                     "--warmups", str(warmups)],
-        #                    check=True)
+        with timeit("performance_benchmark.py"):
+            subprocess.run([sys.executable, "-u", str(BENCH),
+                            "--variant", "neo_normal",
+                            "--users", str(n_users),
+                            "--round", str(rounds),
+                            "--repetitions", str(repetitions),
+                            "--warmups", str(warmups)],
+                           check=True)
             
 
         stop_normal_neo4j_container()
@@ -183,14 +183,14 @@ def run_once(n_users: int, rounds: int) -> None:
                             "--json-dir", "./output"],
                            check=True)
 
-        # with timeit("performance_benchmark.py"):
-        #     subprocess.run([sys.executable, "-u", str(BENCH),
-        #                     "--variant", "neo_opt",
-        #                     "--users", str(n_users),
-        #                     "--round", str(rounds),
-        #                     "--repetitions", str(repetitions),
-        #                     "--warmups", str(warmups)],
-        #                    check=True)
+        with timeit("performance_benchmark.py"):
+            subprocess.run([sys.executable, "-u", str(BENCH),
+                            "--variant", "neo_opt",
+                            "--users", str(n_users),
+                            "--round", str(rounds),
+                            "--repetitions", str(repetitions),
+                            "--warmups", str(warmups)],
+                           check=True)
             
 
         stop_optimized_neo4j_container()
