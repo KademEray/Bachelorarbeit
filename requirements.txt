@@ -5,3 +5,4 @@ neo4j==5.28.1
 psycopg2-binary==2.9.10
 tqdm==4.67.1
 Faker==37.3.0
+scipy==1.16.1

@@ -60,7 +60,7 @@ Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* pe
 | **Treiber**                   | `psycopg2-binary` 2.9.10, `neo4j` 5.28.1 |
 | **Benchmark**                 | `concurrent.futures`, Docker ≥ 24 |
 | **Visualisierung**            | `matplotlib` 3.9.4, `numpy` 1.26.4 |
-| **Hilfstools**                | `tqdm` 4.67.1 |
+| **Hilfstools**                | `tqdm` 4.67.1, `scipy` 1.16.1 |
 
 **Hardware (Testhost)**  
 
