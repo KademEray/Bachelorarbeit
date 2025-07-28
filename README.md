@@ -77,15 +77,19 @@ Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* pe
 
 ```
 results/
-├─ *_results.csv              # Rohdaten pro Lauf: users, variant, round, repetitions, warmups
-├─ summary_table.csv          # Durchschnittswerte über alle Abfragen + Gesamtzeile ALL
-├─ per_query_table.csv        # Durchschnittswerte pro Einzel-Query (Ausreißer sichtbar)
-├─ per_complexity_table.csv   # Durchschnittswerte pro Komplexitätsgruppe (easy…delete)
-├─ constellation_stats.csv    # Mittelwert, Std-Abw. & Varianz je Konstellation (users, concurrency, variant)
-├─ complexity_stats.csv       # Mittelwert, Std-Abw. & Varianz je Komplexitätsgruppe
-├─ ci_duration.csv            # 95 %-Konfidenzintervalle für duration_ms je Konstellation
-├─ significance_duration.csv  # Paarweise Welch-t-Tests (p-Wert & signifikant?) je Konstellation
-└─ volume_sizes.csv           # Gemessene Datenbank-Volumina (MB) je users & variant
+├─ *_results.csv                         # Rohdaten pro Lauf: users, variant, round, repetitions, warmups
+├─ summary_table.csv                     # Durchschnittswerte über alle Abfragen + Gesamtzeile ALL
+├─ per_query_table.csv                   # Durchschnittswerte pro Einzel-Query (Ausreißer sichtbar)
+├─ per_complexity_table.csv              # Durchschnittswerte pro Komplexitätsgruppe (easy…delete)
+├─ constellation_stats.csv               # Mittelwert, Std-Abw. & Varianz je Konstellation (users, concurrency, variant)
+├─ complexity_stats.csv                  # Mittelwert, Std-Abw. & Varianz je Komplexitätsgruppe
+├─ ci_duration_by_complexity.csv         # 95 %-Konfidenzintervalle (duration_ms) je Komplexität
+├─ p99_by_complexity.csv                 # 99 %-Perzentil (duration_ms) je Komplexität
+├─ significance_by_complexity.csv        # Paarweise Welch-t-Tests je Komplexität
+├─ ci_duration_by_query.csv              # 95 %-Konfidenzintervalle (duration_ms) je Query
+├─ p99_by_query.csv                      # 99 %-Perzentil (duration_ms) je Query
+├─ significance_by_query.csv             # Paarweise Welch-t-Tests je Query
+├─ volume_sizes.csv                      # Gemessene DB-Volumina (MB) je users & variant
 
 plots/
 └─ <prefix>_<variant>.png
@@ -150,4 +154,4 @@ python main.py
 
 ---
 
-> Letzte Aktualisierung: 27.07.2025
+> Letzte Aktualisierung: 28.07.2025
