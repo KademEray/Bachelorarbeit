@@ -17,11 +17,13 @@ ALPHA         = 0.05  # 95 % Konfidenz
 OUT_CI_C      = RES_DIR / "ci_duration_by_complexity.csv"
 OUT_P99_C     = RES_DIR / "p99_by_complexity.csv"
 OUT_SIG_C     = RES_DIR / "significance_by_complexity.csv"
+OUT_P50_C    = RES_DIR / "p50_by_complexity.csv"
 
 # Ausgabedateien für Query
 OUT_CI_Q      = RES_DIR / "ci_duration_by_query.csv"
 OUT_P99_Q     = RES_DIR / "p99_by_query.csv"
 OUT_SIG_Q     = RES_DIR / "significance_by_query.csv"
+OUT_P50_Q    = RES_DIR / "p50_by_query.csv"
 
 # Komplexitäts-Mapping
 COMPLEX_MAP = {
@@ -95,6 +97,21 @@ p99_c_df = pd.DataFrame(p99_c).sort_values(
 p99_c_df.to_csv(OUT_P99_C, index=False)
 print(f"💾 p99 by complexity → {OUT_P99_C}")
 
+# ─── 2.5 p50 by complexity ────────────────────────────────────────────────
+p50_c = []
+for (u,c,v,comp), g in df.groupby(["users","concurrency","variant","complexity"], observed=True):
+    vals = g["duration_ms"].dropna()
+    if vals.empty: continue
+    p50_c.append({
+        "users":u, "concurrency":c, "variant":v, "complexity":comp,
+        "p50_duration": np.percentile(vals,50)
+    })
+p50_c_df = pd.DataFrame(p50_c).sort_values(
+    ["users","concurrency","variant","complexity"], ignore_index=True
+)
+p50_c_df.to_csv(OUT_P50_C, index=False)
+print(f"💾 p50 by complexity → {OUT_P50_C}")
+
 # ─── 3. Significance by complexity ────────────────────────────────────────
 tests_c = []
 for (u,c,comp), grp in df.groupby(["users","concurrency","complexity"], observed=True):
@@ -149,6 +166,21 @@ p99_q_df = pd.DataFrame(p99_q).sort_values(
 )
 p99_q_df.to_csv(OUT_P99_Q, index=False)
 print(f"💾 p99 by query → {OUT_P99_Q}")
+
+# ─── 5.5 p50 by query ─────────────────────────────────────────────────────
+p50_q = []
+for (u,c,v,qno), g in df.groupby(["users","concurrency","variant","query_no"], observed=True):
+    vals = g["duration_ms"].dropna()
+    if vals.empty: continue
+    p50_q.append({
+        "users":u, "concurrency":c, "variant":v, "query_no":qno,
+        "p50_duration": np.percentile(vals,50)
+    })
+p50_q_df = pd.DataFrame(p50_q).sort_values(
+    ["users","concurrency","variant","query_no"], ignore_index=True
+)
+p50_q_df.to_csv(OUT_P50_Q, index=False)
+print(f"💾 p50 by query → {OUT_P50_Q}")
 
 # ─── 6. Significance by query ─────────────────────────────────────────────
 tests_q = []
