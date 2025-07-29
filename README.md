@@ -85,9 +85,11 @@ results/
 ├─ complexity_stats.csv                  # Mittelwert, Std-Abw. & Varianz je Komplexitätsgruppe
 ├─ ci_duration_by_complexity.csv         # 95 %-Konfidenzintervalle (duration_ms) je Komplexität
 ├─ p99_by_complexity.csv                 # 99 %-Perzentil (duration_ms) je Komplexität
+├─ p55_by_complexity.csv                # P50 Mediane Latenz (duration_ms) je Komplexität
 ├─ significance_by_complexity.csv        # Paarweise Welch-t-Tests je Komplexität
 ├─ ci_duration_by_query.csv              # 95 %-Konfidenzintervalle (duration_ms) je Query
 ├─ p99_by_query.csv                      # 99 %-Perzentil (duration_ms) je Query
+├─p55_by_query.csv                      # P50 Mediane Latenz(duration_ms) je Query
 ├─ significance_by_query.csv             # Paarweise Welch-t-Tests je Query
 ├─ volume_sizes.csv                      # Gemessene DB-Volumina (MB) je users & variant
 
@@ -154,4 +156,4 @@ python main.py
 
 ---
 
-> Letzte Aktualisierung: 28.07.2025
+> Letzte Aktualisierung: 29.07.2025
