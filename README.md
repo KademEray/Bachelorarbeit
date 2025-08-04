@@ -129,7 +129,7 @@ cd Bachelorarbeit
 # Wenn Fehler kommt das product_dataset.csv fehlt dann Produktdatensatz downloaden und nach ./product_data/ entpacken und in product_dataset.csv umbennen
 # https://doi.org/10.34740/kaggle/ds/3864183
 
-Konfigurationsdatei anpassen: neo4j.conf und postgres-tuning.conf
+Konfigurationsdatei anpassen an Hostsystem: neo4j.conf und postgres-tuning.conf
 
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
