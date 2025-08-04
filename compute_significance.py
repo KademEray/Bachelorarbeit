@@ -63,141 +63,76 @@ df = pd.concat(frames, ignore_index=True)
 
 variants = df["variant"].unique()
 
-# ─── 1. CI by complexity ───────────────────────────────────────────────────
-cis_c = []
-for (u,c,v,comp), g in df.groupby(["users","concurrency","variant","complexity"], observed=True):
-    data = g["duration_ms"].dropna()
-    n = len(data)
-    if n<2: continue
-    m = data.mean(); s = data.std(ddof=1); se = s/np.sqrt(n)
-    t = stats.t.ppf(1-ALPHA/2, df=n-1)
-    cis_c.append({
-        "users":u, "concurrency":c, "variant":v, "complexity":comp,
-        "n":n, "mean":m, "std":s,
-        "ci_lower":m-t*se, "ci_upper":m+t*se
-    })
-ci_c_df = pd.DataFrame(cis_c).sort_values(
-    ["users","concurrency","variant","complexity"], ignore_index=True
-)
-ci_c_df.to_csv(OUT_CI_C, index=False)
-print(f"💾 CI by complexity → {OUT_CI_C}")
+def cohen_d(sample1:pd.Series, sample2:pd.Series)->float:
+    n1, n2  = len(sample1), len(sample2)
+    if n1 < 2 or n2 < 2:
+        return np.nan
+    s1, s2  = sample1.std(ddof=1), sample2.std(ddof=1)
+    # gepoolte Varianz
+    s_pooled = np.sqrt(((n1-1)*s1**2 + (n2-1)*s2**2)/(n1+n2-2))
+    if s_pooled == 0:
+        return np.nan
+    return (sample1.mean() - sample2.mean()) / s_pooled
 
-# ─── 2. p99 by complexity ──────────────────────────────────────────────────
-p99_c = []
-for (u,c,v,comp), g in df.groupby(["users","concurrency","variant","complexity"], observed=True):
-    vals = g["duration_ms"].dropna()
-    if vals.empty: continue
-    p99_c.append({
-        "users":u, "concurrency":c, "variant":v, "complexity":comp,
-        "p99_duration": np.percentile(vals,99)
-    })
-p99_c_df = pd.DataFrame(p99_c).sort_values(
-    ["users","concurrency","variant","complexity"], ignore_index=True
-)
-p99_c_df.to_csv(OUT_P99_C, index=False)
-print(f"💾 p99 by complexity → {OUT_P99_C}")
+def compute_percentile(df:pd.DataFrame, group_cols:list,
+                       p:int, out_path:Path, label:str):
+    rows=[]
+    for key,g in df.groupby(group_cols,observed=True):
+        vals=g["duration_ms"].dropna()
+        if vals.empty: continue
+        rows.append(dict(zip(group_cols,key))|{label:np.percentile(vals,p)})
+    pd.DataFrame(rows).sort_values(group_cols,ignore_index=True)\
+        .to_csv(out_path, index=False)
+    print(f"💾 {label} → {out_path}")
 
-# ─── 2.5 p50 by complexity ────────────────────────────────────────────────
-p50_c = []
-for (u,c,v,comp), g in df.groupby(["users","concurrency","variant","complexity"], observed=True):
-    vals = g["duration_ms"].dropna()
-    if vals.empty: continue
-    p50_c.append({
-        "users":u, "concurrency":c, "variant":v, "complexity":comp,
-        "p50_duration": np.percentile(vals,50)
-    })
-p50_c_df = pd.DataFrame(p50_c).sort_values(
-    ["users","concurrency","variant","complexity"], ignore_index=True
-)
-p50_c_df.to_csv(OUT_P50_C, index=False)
-print(f"💾 p50 by complexity → {OUT_P50_C}")
+def compute_significance(df:pd.DataFrame, group_cols:list, out_path:Path):
+    rows=[]
+    for key,grp in df.groupby(group_cols,observed=True):
+        for v1,v2 in itertools.combinations(variants,2):
+            d1 = grp.loc[grp["variant"]==v1,"duration_ms"].dropna()
+            d2 = grp.loc[grp["variant"]==v2,"duration_ms"].dropna()
+            if len(d1)<2 or len(d2)<2: continue
+            stat,p = stats.ttest_ind(d1,d2,equal_var=False)
+            rows.append(dict(zip(group_cols,key))|{
+                "variant_1":v1,"variant_2":v2,
+                "t_stat":stat,"p_value":p,
+                "significant":p<ALPHA,
+                "cohen_d":cohen_d(d1,d2)        #  ⇦  NEU
+            })
+    pd.DataFrame(rows).sort_values(group_cols+["variant_1","variant_2"],
+                                   ignore_index=True)\
+      .to_csv(out_path,index=False)
+    print(f"💾 significance → {out_path}")
 
-# ─── 3. Significance by complexity ────────────────────────────────────────
-tests_c = []
-for (u,c,comp), grp in df.groupby(["users","concurrency","complexity"], observed=True):
-    for v1,v2 in itertools.combinations(variants,2):
-        d1 = grp.loc[grp["variant"]==v1,"duration_ms"].dropna()
-        d2 = grp.loc[grp["variant"]==v2,"duration_ms"].dropna()
-        if len(d1)<2 or len(d2)<2: continue
-        stat,p = stats.ttest_ind(d1,d2,equal_var=False)
-        tests_c.append({
-            "users":u, "concurrency":c, "complexity":comp,
-            "variant_1":v1, "variant_2":v2,
-            "t_stat":stat, "p_value":p, "significant": p<ALPHA
+def compute_ci(df: pd.DataFrame, group_cols: list, out_path: Path):
+    rows = []
+    for key, g in df.groupby(group_cols, observed=True):
+        data = g["duration_ms"].dropna()
+        n = len(data)
+        if n < 2:
+            continue
+        m, s = data.mean(), data.std(ddof=1)
+        se   = s / np.sqrt(n)
+        t    = stats.t.ppf(1 - ALPHA/2, df=n-1)
+        rows.append(dict(zip(group_cols, key)) | {
+            "n": n, "mean": m, "std": s,
+            "ci_lower": m - t * se,
+            "ci_upper": m + t * se
         })
-sig_c_df = pd.DataFrame(tests_c).sort_values(
-    ["users","concurrency","complexity","variant_1","variant_2"],
-    ignore_index=True
-)
-sig_c_df.to_csv(OUT_SIG_C, index=False)
-print(f"💾 significance by complexity → {OUT_SIG_C}")
+    (pd.DataFrame(rows)
+       .sort_values(group_cols, ignore_index=True)
+       .to_csv(out_path, index=False))
+    print(f"💾 CI  → {out_path}")
 
-# ──────────────────────────────────────────────────────────────────────────
-# ─── 4. CI by query ───────────────────────────────────────────────────────
-cis_q = []
-for (u,c,v,qno), g in df.groupby(["users","concurrency","variant","query_no"], observed=True):
-    data = g["duration_ms"].dropna()
-    n = len(data)
-    if n<2: continue
-    m = data.mean(); s = data.std(ddof=1); se = s/np.sqrt(n)
-    t = stats.t.ppf(1-ALPHA/2, df=n-1)
-    cis_q.append({
-        "users":u, "concurrency":c, "variant":v, "query_no":qno,
-        "n":n, "mean":m, "std":s,
-        "ci_lower":m-t*se, "ci_upper":m+t*se
-    })
-ci_q_df = pd.DataFrame(cis_q).sort_values(
-    ["users","concurrency","variant","query_no"], ignore_index=True
-)
-ci_q_df.to_csv(OUT_CI_Q, index=False)
-print(f"💾 CI by query → {OUT_CI_Q}")
 
-# ─── 5. p99 by query ──────────────────────────────────────────────────────
-p99_q = []
-for (u,c,v,qno), g in df.groupby(["users","concurrency","variant","query_no"], observed=True):
-    vals = g["duration_ms"].dropna()
-    if vals.empty: continue
-    p99_q.append({
-        "users":u, "concurrency":c, "variant":v, "query_no":qno,
-        "p99_duration": np.percentile(vals,99)
-    })
-p99_q_df = pd.DataFrame(p99_q).sort_values(
-    ["users","concurrency","variant","query_no"], ignore_index=True
-)
-p99_q_df.to_csv(OUT_P99_Q, index=False)
-print(f"💾 p99 by query → {OUT_P99_Q}")
+# Helper-Calls (ersetzt die Hand-Schleifen)
+compute_ci(df, ["users","concurrency","variant","complexity"], OUT_CI_C)
+compute_ci(df, ["users","concurrency","variant","query_no"],  OUT_CI_Q)
 
-# ─── 5.5 p50 by query ─────────────────────────────────────────────────────
-p50_q = []
-for (u,c,v,qno), g in df.groupby(["users","concurrency","variant","query_no"], observed=True):
-    vals = g["duration_ms"].dropna()
-    if vals.empty: continue
-    p50_q.append({
-        "users":u, "concurrency":c, "variant":v, "query_no":qno,
-        "p50_duration": np.percentile(vals,50)
-    })
-p50_q_df = pd.DataFrame(p50_q).sort_values(
-    ["users","concurrency","variant","query_no"], ignore_index=True
-)
-p50_q_df.to_csv(OUT_P50_Q, index=False)
-print(f"💾 p50 by query → {OUT_P50_Q}")
+compute_percentile(df, ["users","concurrency","variant","complexity"], 99, OUT_P99_C, "p99_duration")
+compute_percentile(df, ["users","concurrency","variant","complexity"], 50, OUT_P50_C, "p50_duration")
+compute_percentile(df, ["users","concurrency","variant","query_no"],  99, OUT_P99_Q, "p99_duration")
+compute_percentile(df, ["users","concurrency","variant","query_no"],  50, OUT_P50_Q, "p50_duration")
 
-# ─── 6. Significance by query ─────────────────────────────────────────────
-tests_q = []
-for (u,c,qno), grp in df.groupby(["users","concurrency","query_no"], observed=True):
-    for v1,v2 in itertools.combinations(variants,2):
-        d1 = grp.loc[grp["variant"]==v1,"duration_ms"].dropna()
-        d2 = grp.loc[grp["variant"]==v2,"duration_ms"].dropna()
-        if len(d1)<2 or len(d2)<2: continue
-        stat,p = stats.ttest_ind(d1,d2,equal_var=False)
-        tests_q.append({
-            "users":u, "concurrency":c, "query_no":qno,
-            "variant_1":v1, "variant_2":v2,
-            "t_stat":stat, "p_value":p, "significant": p<ALPHA
-        })
-sig_q_df = pd.DataFrame(tests_q).sort_values(
-    ["users","concurrency","query_no","variant_1","variant_2"],
-    ignore_index=True
-)
-sig_q_df.to_csv(OUT_SIG_Q, index=False)
-print(f"💾 significance by query → {OUT_SIG_Q}")
+compute_significance(df, ["users","concurrency","complexity"], OUT_SIG_C)
+compute_significance(df, ["users","concurrency","query_no"],   OUT_SIG_Q)
