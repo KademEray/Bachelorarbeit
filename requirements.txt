@@ -6,3 +6,4 @@ psycopg2-binary==2.9.10
 tqdm==4.67.1
 Faker==37.3.0
 scipy==1.16.1
+kagglehub[pandas-datasets]==0.3.12

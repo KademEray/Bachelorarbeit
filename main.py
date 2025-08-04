@@ -6,6 +6,8 @@
 import subprocess, sys, time, logging
 from pathlib import Path
 from contextlib import contextmanager
+import kagglehub
+from kagglehub import KaggleDatasetAdapter
 
 # === Import der Helper-Module für die vier Datenbankvarianten ===
 from postgresql_normal.postgresql_normal import (
@@ -38,6 +40,12 @@ INSERT_NEO4J_NORMAL          = BASE_DIR / "neo4j_normal" / "insert_normal_neo4j_
 INSERT_NEO4J_OPTIMIZED       = BASE_DIR / "neo4j_optimized" / "insert_optimized_neo4j_data.py"
 BENCH   = BASE_DIR / "performance_benchmark.py"
 ANALYSE = BASE_DIR / "analyse.py"
+# ----- Produktdatensatz (Amazon UK Products 2023) -----
+DATASET_SLUG      = "asaniczka/amazon-uk-products-dataset-2023"
+DATA_INTERNAL_CSV = "amazon_uk_products_2023.csv"   # Dateiname im Kaggle-Zip
+PRODUCT_DATA_DIR  = BASE_DIR / "product_data"
+PRODUCT_DATA_PATH = PRODUCT_DATA_DIR / "product_dataset.csv"   # <-– gewünschter Zielname
+
 
 
 # Liste von Nutzerzahlen für die Simulation (z. B. 100, 1000 usw.)
@@ -61,6 +69,47 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(message)s"
 )
+
+
+def ensure_product_dataset() -> Path:
+    """
+    Liegt die Datei ./product_data/product_dataset.csv?
+    → Ja  : Pfad zurückgeben
+    → Nein: komplettes Kaggle-Dataset laden, erste CSV finden,
+            in product_dataset.csv kopieren und Pfad zurückgeben.
+    """
+    PRODUCT_DATA_DIR.mkdir(exist_ok=True)
+
+    if PRODUCT_DATA_PATH.exists():
+        logging.info("Produktdatensatz vorhanden: %s", PRODUCT_DATA_PATH)
+        return PRODUCT_DATA_PATH
+
+    logging.info("⬇️  Lade kompletten Datensatz von Kaggle …")
+    try:
+        # Lädt alle Dateien in ein Cache-Verzeichnis und liefert dessen Pfad
+        download_dir = Path(kagglehub.dataset_download(DATASET_SLUG))
+
+        # Erste *.csv im Ordner suchen (es gibt dort nur eine große CSV)
+        csv_files = list(download_dir.rglob("*.csv"))
+        if not csv_files:
+            raise FileNotFoundError("Keine CSV-Datei im Kaggle-Download gefunden.")
+
+        src = csv_files[0]
+        logging.info("Gefundene CSV: %s", src.name)
+
+        # In unser Arbeitsverzeichnis kopieren/umbenennen
+        PRODUCT_DATA_PATH.write_bytes(src.read_bytes())
+        logging.info("✅ Produktdatensatz gespeichert unter %s", PRODUCT_DATA_PATH)
+
+    except Exception as e:
+        logging.error("Automatischer Download fehlgeschlagen: %s", e)
+        logging.error(
+            "Bitte Datensatz manuell von https://doi.org/10.34740/kaggle/ds/3864183 "
+            "herunterladen und als %s ablegen.",
+            DATASET_SLUG, PRODUCT_DATA_PATH)
+        raise
+
+    return PRODUCT_DATA_PATH
 
 
 @contextmanager
@@ -212,6 +261,8 @@ def run_once(n_users: int, rounds: int) -> None:
 
 
 def main():
+    # sicherstellen, dass ./product_data/product_dataset.csv existiert
+    ensure_product_dataset()
     # Hauptschleife: Führt den Benchmark mehrfach mit steigender Nutzeranzahl durch
     for rnd in range(1, MAX_ROUNDS + 1):
         for n_users in USER_STEPS:
