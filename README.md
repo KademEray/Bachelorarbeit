@@ -135,7 +135,7 @@ python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scriptsactivate
 pip install -r requirements.txt
 
-# vollständigen Workflow (≈ 15–20 Min.) starten
+# vollständigen Workflow starten
 python main.py
 
 ```
