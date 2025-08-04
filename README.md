@@ -55,6 +55,7 @@ Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* pe
 
 | Kategorie                     | Tool / Bibliothek          | Version |
 |-------------------------------|----------------------------|---------|
+| **Python**                    | Python 3.11.9 |
 | **Datengenerierung**          | Python 3.11.9, `pandas` 2.2.3, `faker` 37.3.0 |
 | **Container-DBs**             | PostgreSQL 17.5, Neo4j 5.26.6 |
 | **Treiber**                   | `psycopg2-binary` 2.9.10, `neo4j` 5.28.1 |
