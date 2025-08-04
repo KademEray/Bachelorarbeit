@@ -174,7 +174,7 @@ cython_debug/
 .pypirc
 /output/*
 /output_streamed
-/product_data/*
+/product_data/product_dataset.csv
 neo4j_normal/static_products_data_normal.cypher
 neo4j_optimized/static_products_data_optimized.cypher
 postgresql_normal/static_products_data.sql

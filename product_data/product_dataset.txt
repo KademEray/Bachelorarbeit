@@ -1,0 +1,2 @@
+# Produktdatensatz downloaden und nach ./product_data/ entpacken
+# https://doi.org/10.34740/kaggle/ds/3864183

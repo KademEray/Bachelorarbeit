@@ -33,7 +33,7 @@ Diese Arbeit vergleicht **relationale Datenbanken (PostgreSQL 17.5)** mit **Grap
 
 > **Zitation des externen Datensatzes**  
 > Saniczka, A. (2023). *Amazon UK Products Dataset 2023* [Data set]. Kaggle.  
-> <https://www.kaggle.com/datasets/asaniczka/amazon-uk-products-dataset-2023>  
+> <https://doi.org/10.34740/kaggle/ds/3864183>  
 > Lizenz: ODC-By 1.0
 
 Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* personen­bezogenen Daten.
@@ -125,8 +125,10 @@ Es werden ausschließlich **synthetische Daten** verwendet → **keine DSGVO-Rel
 git clone https://github.com/KademEray/Bachelorarbeit.git
 cd Bachelorarbeit
 
-# Produktdatensatz (CSV) nach ./product_data/ legen
-# https://www.kaggle.com/datasets/asaniczka/amazon-uk-products-dataset-2023
+# Produktdatensatz downloaden und nach ./product_data/ entpacken
+# https://doi.org/10.34740/kaggle/ds/3864183
+
+Konfigurationsdatei anpassen: neo4j.conf und postgres-tuning.conf
 
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scriptsctivate
