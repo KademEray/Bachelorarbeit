@@ -7,7 +7,6 @@ import subprocess, sys, time, logging
 from pathlib import Path
 from contextlib import contextmanager
 import kagglehub
-from kagglehub import KaggleDatasetAdapter
 
 # === Import der Helper-Module für die vier Datenbankvarianten ===
 from postgresql_normal.postgresql_normal import (
