@@ -159,4 +159,4 @@ python main.py
 
 ---
 
-> Letzte Aktualisierung: 29.07.2025
+> Letzte Aktualisierung: 04.08.2025
