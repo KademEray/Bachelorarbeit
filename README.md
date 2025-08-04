@@ -125,13 +125,13 @@ Es werden ausschließlich **synthetische Daten** verwendet → **keine DSGVO-Rel
 git clone https://github.com/KademEray/Bachelorarbeit.git
 cd Bachelorarbeit
 
-# Produktdatensatz downloaden und nach ./product_data/ entpacken
+# Wenn Fehler kommt das product_dataset.csv fehlt dann Produktdatensatz downloaden und nach ./product_data/ entpacken und in product_dataset.csv umbennen
 # https://doi.org/10.34740/kaggle/ds/3864183
 
 Konfigurationsdatei anpassen: neo4j.conf und postgres-tuning.conf
 
 python -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scriptsctivate
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # vollständigen Workflow (≈ 15–20 Min.) starten
