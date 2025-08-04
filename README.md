@@ -132,7 +132,7 @@ cd Bachelorarbeit
 Konfigurationsdatei anpassen: neo4j.conf und postgres-tuning.conf
 
 python -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scriptsctivate
+source .venv/bin/activate      # Windows: .venv\Scriptsactivate
 pip install -r requirements.txt
 
 # vollständigen Workflow (≈ 15–20 Min.) starten
