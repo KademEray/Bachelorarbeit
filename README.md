@@ -71,6 +71,7 @@ Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* pe
 | RAM             | 32 GB DDR5 |
 | SSD 1 / 2       | KIOXIA EXCERIA PRO, je ≈ 931 GB |
 | Betriebssystem  | Windows 11 (22H2) + Docker Engine 28.2.2 (build e6534b4) |
+| Docker Desktop  | Standard-Ressourceneinstellungen (WSL 2 Backend) |
 
 ---
 
