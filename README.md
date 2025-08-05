@@ -144,7 +144,23 @@ python main.py
 
 ---
 
-## 9 Lizenzen & Nachnutzung
+## 9. Systemanforderungen & Fehlerbehebung
+
+### Empfohlene Konfiguration
+Der Benchmark ist für die unter Punkt 4 spezifizierte Hardware (6C/12T CPU, 32 GB RAM) optimiert. Für eine reibungslose Ausführung wird eine vergleichbare Konfiguration empfohlen.
+
+### Fehlerbehebung: Import schlägt fehl (`out of memory`)
+**Ursache:** Der initiale Datenimport ist sehr speicherintensiv, da eine hohe **Batch-Größe** verwendet wird, um die Laufzeit zu verkürzen. Auf Systemen mit weniger als 16 GB RAM kann dies zum Absturz des Datenbank-Containers führen.
+
+**Lösung:** Reduzieren Sie die `BATCH_SIZE`-Variable in den folgenden Skripten manuell (z.B. von `500000` auf `100000`):
+*   `src/database/postgresql_importer.py`
+*   `src/database/neo4j_importer.py`
+
+Diese Anpassung erhöht zwar die Importzeit, ermöglicht aber die Ausführung auf ressourcenschwächeren Systemen. Das eigentliche Performance-Benchmark-Skript muss nicht verändert werden, da die Parallelität Teil des Testdesigns ist.
+
+---
+
+## 10 Lizenzen & Nachnutzung
 
 * **Code**: MIT  
 * **Benchmark-Ergebnisse & Plots**: CC BY 4.0 – bitte Autor & Quelle nennen.  
@@ -152,11 +168,11 @@ python main.py
 
 ---
 
-## 10 Weiterführende Ressourcen
+## 11 Weiterführende Ressourcen
 
 * FitForFDM-Checkliste „Software‑Code‑Dokumentation / Abschlussarbeit“
 * Offizielle Dokumentation: PostgreSQL 17 • Neo4j 5  
 
 ---
 
-> Letzte Aktualisierung: 04.08.2025
+> Letzte Aktualisierung: 05.08.2025
