@@ -153,8 +153,8 @@ Der Benchmark ist für die unter Punkt 4 spezifizierte Hardware (6C/12T CPU, 32 
 **Ursache:** Der initiale Datenimport ist sehr speicherintensiv, da eine hohe **Batch-Größe** verwendet wird, um die Laufzeit zu verkürzen. Auf Systemen mit weniger als 16 GB RAM kann dies zum Absturz des Datenbank-Containers führen.
 
 **Lösung:** Reduzieren Sie die `BATCH_SIZE`-Variable in den folgenden Skripten manuell (z.B. von `500000` auf `100000`):
-*   `src/database/postgresql_importer.py`
-*   `src/database/neo4j_importer.py`
+*   `postgresql_normal/insert_normal_postgresql_data.py`
+*   `postgresql_optimized/insert_optimized_postgresql_data.py`
 
 Diese Anpassung erhöht zwar die Importzeit, ermöglicht aber die Ausführung auf ressourcenschwächeren Systemen. Das eigentliche Performance-Benchmark-Skript muss nicht verändert werden, da die Parallelität Teil des Testdesigns ist.
 
