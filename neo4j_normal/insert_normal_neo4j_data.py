@@ -19,7 +19,6 @@ CONTAINER_NAME = "neo5_test_normal"                       # Containername zur ei
 IMAGE_NAME = "neo5-normal"                                # Name des zu verwendenden Docker-Images für Neo4j
 BASE_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = (BASE_DIR / ".." / "results").resolve()
-VOLUME_CSV  = RESULTS_DIR / "volume_sizes.csv"
 
 
 # === Tabellenstruktur (Nodes) =============================================
@@ -550,7 +549,7 @@ def log_volume_size(variant: str, users: int,
                     volume_path: Path,
                     out_csv: Path = (BASE_DIR / ".." / "results" / "volume_sizes.csv")) -> None:
     """
-    Hängt eine Zeile  variant,users,disk_mb  an die Ergebnis-CSV an.
+    Hängt eine Zeile  variant,users,volume_mb  an die Ergebnis-CSV an.
 
     Parameters
     ----------
@@ -560,16 +559,16 @@ def log_volume_size(variant: str, users: int,
     out_csv      : Zieldatei; wird angelegt, falls sie noch nicht existiert
     """
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    disk_mb = _folder_size_mb(volume_path)
+    volume_mb = _folder_size_mb(volume_path)
 
     # Datei neu anlegen → Header schreiben; sonst anhängen
     write_header = not out_csv.exists()
     with out_csv.open("a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if write_header:
-            w.writerow(["variant", "users", "disk_mb"])
-        w.writerow([variant, users, disk_mb])
-    print(f"💾  Volume-Größe protokolliert: {variant} | {users} | {disk_mb} MB")
+            w.writerow(["variant", "users", "volume_mb"])
+        w.writerow([variant, users, volume_mb])
+    print(f"💾  Volume-Größe protokolliert: {variant} | {users} | {volume_mb} MB")
 
 
 def main():

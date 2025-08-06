@@ -13,7 +13,6 @@ from datetime import datetime
 BATCH_SIZE = 500_000 # Größe der Batches für den Datenimport
 BASE_DIR = Path(__file__).resolve().parent        
 RESULTS_DIR = (BASE_DIR / ".." / "results").resolve()
-VOLUME_CSV  = RESULTS_DIR / "volume_sizes.csv"
 
 
 def fix_sequences(conn):
