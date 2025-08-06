@@ -7,7 +7,6 @@ import subprocess, sys, time, logging
 from pathlib import Path
 from contextlib import contextmanager
 import kagglehub
-from kagglehub import KaggleDatasetAdapter
 
 # === Import der Helper-Module für die vier Datenbankvarianten ===
 from postgresql_normal.postgresql_normal import (
@@ -42,7 +41,6 @@ BENCH   = BASE_DIR / "performance_benchmark.py"
 ANALYSE = BASE_DIR / "analyse.py"
 # ----- Produktdatensatz (Amazon UK Products 2023) -----
 DATASET_SLUG      = "asaniczka/amazon-uk-products-dataset-2023"
-DATA_INTERNAL_CSV = "amazon_uk_products_2023.csv"   # Dateiname im Kaggle-Zip
 PRODUCT_DATA_DIR  = BASE_DIR / "product_data"
 PRODUCT_DATA_PATH = PRODUCT_DATA_DIR / "product_dataset.csv"   # <-– gewünschter Zielname
 

@@ -55,7 +55,8 @@ Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* pe
 
 | Kategorie                     | Tool / Bibliothek          | Version |
 |-------------------------------|----------------------------|---------|
-| **Datengenerierung**          | Python 3.11.9, `pandas` 2.2.3, `faker` 37.3.0 |
+| **Python**                    | Python 3.11.9 |
+| **Datengenerierung**          | `pandas` 2.2.3, `faker` 37.3.0 |
 | **Container-DBs**             | PostgreSQL 17.5, Neo4j 5.26.6 |
 | **Treiber**                   | `psycopg2-binary` 2.9.10, `neo4j` 5.28.1 |
 | **Benchmark**                 | `concurrent.futures`, Docker ≥ 24 |
@@ -70,6 +71,7 @@ Alle Shop-Datensätze sind **vollständig synthetisch** und enthalten *keine* pe
 | RAM             | 32 GB DDR5 |
 | SSD 1 / 2       | KIOXIA EXCERIA PRO, je ≈ 931 GB |
 | Betriebssystem  | Windows 11 (22H2) + Docker Engine 28.2.2 (build e6534b4) |
+| Docker Desktop  | Standard-Ressourceneinstellungen (WSL 2 Backend) |
 
 ---
 
@@ -128,13 +130,13 @@ cd Bachelorarbeit
 # Wenn Fehler kommt das product_dataset.csv fehlt dann Produktdatensatz downloaden und nach ./product_data/ entpacken und in product_dataset.csv umbennen
 # https://doi.org/10.34740/kaggle/ds/3864183
 
-Konfigurationsdatei anpassen: neo4j.conf und postgres-tuning.conf
+Konfigurationsdatei anpassen an Hostsystem: neo4j.conf und postgres-tuning.conf
 
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# vollständigen Workflow (≈ 15–20 Min.) starten
+# vollständigen Workflow starten
 python main.py
 
 ```
@@ -143,7 +145,39 @@ python main.py
 
 ---
 
-## 9 Lizenzen & Nachnutzung
+## 9. Systemanforderungen & Konfiguration
+
+### Empfohlene Konfiguration (32 GB RAM)
+Der Benchmark ist für die unter Punkt 4 spezifizierte Hardware (6C/12T CPU, 32 GB RAM) optimiert. Bei Verwendung eines vergleichbaren Systems sind in der Regel keine Konfigurationsanpassungen für die Ausführung notwendig.
+
+### Mindestkonfiguration (16 GB RAM)
+Eine Ausführung des Benchmarks ist ab **mindestens 16 GB RAM** möglich. Hierfür sind jedoch, insbesondere für die speicherintensive Neo4j-Variante, zwingend die folgenden Konfigurationsanpassungen erforderlich, um Speicherfehler (`out of memory`) zu vermeiden.
+
+**Schritt 1: Docker Desktop RAM-Limit auf 16 GB setzen**
+Es ist entscheidend, das RAM-Limit für das WSL-2-Backend von Docker Desktop auf den vollen verfügbaren Arbeitsspeicher (16 GB) zu setzen. Docker Desktop reserviert sich davon einen Anteil, sodass der VM effektiv ca. 14-15 GB zur Verfügung stehen. Dieser Wert ist für die Neo4j-Konfiguration kritisch.
+
+Die Konfiguration erfolgt über eine **`.wslconfig`-Datei** in Ihrem Windows-Benutzerverzeichnis (`C:\Users\<IhrBenutzername>\`). Erstellen Sie diese Datei, falls sie nicht existiert, mit folgendem Inhalt:
+```ini
+[wsl2]
+memory=16GB
+```
+Nach dem Speichern der Datei ist ein Neustart von Docker Desktop erforderlich.
+
+**Schritt 2: Neo4j-Speicherkonfiguration anpassen**
+Passen Sie die Speichereinstellungen in der Datei neo4j.conf an, damit sie innerhalb des von Docker zugewiesenen RAM-Limits operiert. Die folgenden Werte sind für ein 16-GB-System validiert (Heap + Page Cache ≈ 15 GB):
+```ini
+# ── HEAP ────────────────────────────────────
+server.memory.heap.initial_size=4g
+server.memory.heap.max_size=4g
+
+# ── PAGE CACHE ─────────────────────────────
+server.memory.pagecache.size=6g
+```
+Hinweis: Für PostgreSQL sind auf einem 16-GB-System in der Regel keine Anpassungen in der postgres-tuning.conf notwendig, da es weniger strikte Anforderungen an die Speichervorkonfiguration stellt.
+
+---
+
+## 10 Lizenzen & Nachnutzung
 
 * **Code**: MIT  
 * **Benchmark-Ergebnisse & Plots**: CC BY 4.0 – bitte Autor & Quelle nennen.  
@@ -151,11 +185,11 @@ python main.py
 
 ---
 
-## 10 Weiterführende Ressourcen
+## 11 Weiterführende Ressourcen
 
 * FitForFDM-Checkliste „Software‑Code‑Dokumentation / Abschlussarbeit“
 * Offizielle Dokumentation: PostgreSQL 17 • Neo4j 5  
 
 ---
 
-> Letzte Aktualisierung: 29.07.2025
+> Letzte Aktualisierung: 06.08.2025
