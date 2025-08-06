@@ -39,6 +39,8 @@ INSERT_NEO4J_NORMAL          = BASE_DIR / "neo4j_normal" / "insert_normal_neo4j_
 INSERT_NEO4J_OPTIMIZED       = BASE_DIR / "neo4j_optimized" / "insert_optimized_neo4j_data.py"
 BENCH   = BASE_DIR / "performance_benchmark.py"
 ANALYSE = BASE_DIR / "analyse.py"
+COMPUTE_STATS = BASE_DIR / "compute_stats.py"
+COMPUTE_SIGNIFICANCE = BASE_DIR / "compute_significance.py"
 # ----- Produktdatensatz (Amazon UK Products 2023) -----
 DATASET_SLUG      = "asaniczka/amazon-uk-products-dataset-2023"
 PRODUCT_DATA_DIR  = BASE_DIR / "product_data"
@@ -271,6 +273,15 @@ def main():
         subprocess.run([sys.executable, "-u", str(ANALYSE)], check=True)
         logging.info("Analyse abgeschlossen. Ergebnisse in 'results/' und 'plots/' gespeichert.")
 
+    # Signifikanzberechnung der Ergebnisse
+    with timeit("compute_stats.py"):
+        subprocess.run([sys.executable, "-u", str(COMPUTE_STATS)], check=True)
+        logging.info("Statistiken berechnet. Ergebnisse in 'results/' gespeichert.")
+
+    # Signifikanzberechnung der Ergebnisse
+    with timeit("compute_significance.py"):
+        subprocess.run([sys.executable, "-u", str(COMPUTE_SIGNIFICANCE)], check=True)
+        logging.info("Signifikanzberechnung abgeschlossen. Ergebnisse in 'results/' gespeichert.")
 
 if __name__ == "__main__":
     main()

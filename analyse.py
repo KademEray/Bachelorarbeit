@@ -26,6 +26,16 @@ plt.rcParams.update({
     "figure.dpi":        1000    # hohe Auflösung für Druck/Export
 })
 
+# ─────────────────────────────── Helper: Datacheck ───────────────────────────
+def _has_valid_values(arr_like) -> bool:
+    """
+    Liefert True, wenn das übergebene Array / Series
+    mindestens einen finite(n) Zahlenwert enthält.
+    """
+    if isinstance(arr_like, pd.Series):
+        arr_like = arr_like.to_numpy()
+    return np.isfinite(arr_like).any()
+
 
 # ────────────────────────────── Helper --------------------------------------
 def savefig(name: str):
@@ -100,39 +110,41 @@ pivot_by_user = (
 
 # ─────────────────────────── Zeichen-Funktionen ─────────────────────────────
 def line_plots(source: pd.DataFrame, tag: str):
-    """
-    Erstellt für jede Datenbank-Variante ein Liniendiagramm (eine Linie pro
-    Concurrency-Stufe). Geplottet werden jetzt vier Metriken:
-
-        • Ausführungsdauer (Client)   – duration_ms
-        • Server-Execution-Time       – server_ms
-        • CPU-Auslastung              – avg_cpu
-        • RAM-Verbrauch               – avg_mem
-    """
     metrics = [
-        ("duration_ms", "Average Duration (ms)",     "A_duration"),
-        ("server_ms",   "Server Execution (ms)",     "B_server"),
-        ("avg_cpu",     "Average CPU (%)",           "C_cpu"),
-        ("avg_mem",     "Average RAM (MB)",          "D_ram"),
+        ("duration_ms", "Average Duration (ms)", "A_duration"),
+        ("server_ms",   "Server Execution (ms)", "B_server"),
+        ("avg_cpu",     "Average CPU (%)",       "C_cpu"),
+        ("avg_mem",     "Average RAM (MB)",      "D_ram"),
     ]
 
     for metric, ylabel, prefix in metrics:
         for variant, g_var in source.groupby("variant"):
             fig, ax = plt.subplots(figsize=(10, 4))
+            plotted = False
 
             for i, conc in enumerate(CONCURRENCY):
                 g = (
                     g_var[g_var["concurrency"] == conc]
-                    .set_index("query_no")
-                    .reindex(QUERY_IDS)[metric]
+                      .set_index("query_no")
+                      .reindex(QUERY_IDS)[metric]
                 )
+                if not _has_valid_values(g.to_numpy()):
+                    continue  # keine Werte → nächste Linie
+
+                valid_x = g.index[~g.isna()]
                 ax.plot(
-                    QUERY_IDS,
-                    g,
+                    valid_x,
+                    g.loc[valid_x],
                     marker="o",
                     color=COLOR_CMAP(0.35 + i * 0.15),
                     label=f"{conc} Threads",
                 )
+                plotted = True
+
+            if not plotted:  # keine einzige Linie gezeichnet → Plot verwerfen
+                plt.close(fig)
+                print(f"⚠️  {metric}/{variant} – zu wenig Daten, Plot übersprungen")
+                continue
 
             ax.set_title(f"{variant} – {ylabel} je Query")
             ax.set_xlabel("Query-ID")
@@ -148,16 +160,11 @@ def line_plots(source: pd.DataFrame, tag: str):
 
 def grouped_bars(source: pd.DataFrame, tag: str) -> None:
     """
-    Gruppierte Balkendiagramme:
-      – je Concurrency-Stufe ein Plot
-      – Balken gruppiert nach Query-ID, je Variante ein Balken
-      – automatische Entscheidung:
-            * symlog-y-Achse   (wenn Range ≥ 20×)
-            * sonst Bildhöhe   (wenn Range ≥ 5×)
+    Gruppierte Balkendiagramme (je Concurrency ein Plot)
     """
-    bar_w     = 0.18
-    x_pos     = np.arange(len(QUERY_IDS))
-    variants  = sorted(source["variant"].unique())
+    bar_w    = 0.18
+    x_pos    = np.arange(len(QUERY_IDS))
+    variants = sorted(source["variant"].unique())
 
     for conc in CONCURRENCY:
         # ---------- Datenmatrix bauen -----------------------------------
@@ -168,10 +175,14 @@ def grouped_bars(source: pd.DataFrame, tag: str) -> None:
                           .set_index("query_no")
                           .reindex(QUERY_IDS)["duration_ms"]
                           .to_numpy())
-        y_all       = np.concatenate(list(y.values()))
-        global_min  = np.nanmin(y_all)
-        global_max  = np.nanmax(y_all)
-        ratio       = global_max / max(global_min, 1e-9)
+        y_all = np.concatenate(list(y.values()))
+        if not _has_valid_values(y_all):
+            print(f"⚠️  Concurrency {conc} – keine Daten, Plot übersprungen")
+            continue
+
+        global_min = np.nanmin(y_all)
+        global_max = np.nanmax(y_all)
+        ratio      = global_max / max(global_min, 1e-9)
 
         # ---------- Layout bestimmen ------------------------------------
         fig_h   = 4
@@ -179,7 +190,7 @@ def grouped_bars(source: pd.DataFrame, tag: str) -> None:
         if use_log:
             yscale = ("symlog", {"linthresh": global_min * 2})
         elif ratio >= 5:
-            fig_h += 0.6 * np.log10(ratio)      # Höhe strecken
+            fig_h += 0.6 * np.log10(ratio)
             yscale = ("linear", {})
         else:
             yscale = ("linear", {})
@@ -187,10 +198,22 @@ def grouped_bars(source: pd.DataFrame, tag: str) -> None:
         fig, ax = plt.subplots(figsize=(12, fig_h))
 
         # ---------- Balken zeichnen -------------------------------------
-        offset = -(len(variants)-1)/2 * bar_w
+        offset = -(len(variants) - 1) / 2 * bar_w
         for j, v in enumerate(variants):
-            ax.bar(x_pos + offset + j*bar_w, y[v],
-                   width=bar_w, label=v)
+            if not _has_valid_values(y[v]):       # Variante komplett leer → skip
+                continue
+            ax.bar(
+                x_pos + offset + j * bar_w,
+                y[v],
+                width=bar_w,
+                label=v,
+            )
+
+        # ---------- Speichern oder verwerfen ----------------------------
+        if not ax.patches:                        # gar kein Balken → nichts speichern
+            plt.close(fig)
+            print(f"⚠️  Concurrency {conc} – alle Varianten leer, Plot übersprungen")
+            continue
 
         # ---------- Achsen & Styling ------------------------------------
         name, kw = yscale
@@ -206,16 +229,11 @@ def grouped_bars(source: pd.DataFrame, tag: str) -> None:
         plt.close(fig)
 
 
+
 # ─────────────────────────  BARS PLOT  ────────────────────────────────────
 def bars_conc_variant(df: pd.DataFrame, *, all_users: bool = False) -> None:
     """
-    Balkendiagramm(e) Ø-Duration_ms  vs.  Concurrency  &  Variante.
-
-    Parameters
-    ----------
-    df         : DataFrame   –  muss Spalten  users, concurrency, variant, duration_ms enthalten
-    all_users  : bool        –  True  →  Daten aller User zusammengenommen (ein einziger Plot)
-                               False →  es wird für jede User-Größe (df['users'].unique()) ein Plot erstellt
+    Balkendiagramm(e) Ø-Duration_ms  vs.  Concurrency  &  Variante
     """
     # Mittelwert über alle Query-IDs bilden
     base = (
@@ -223,32 +241,45 @@ def bars_conc_variant(df: pd.DataFrame, *, all_users: bool = False) -> None:
           .mean()
     )
 
-    var_order = sorted(base["variant"].unique())
-    cmap      = plt.get_cmap("tab10")
-    colors    = {v: cmap(i) for i, v in enumerate(var_order)}
-    bar_w     = 0.18
-    x_pos     = np.arange(len(CONCURRENCY))
+    # komplette Variant-Palette (für konsistente Farben)
+    var_palette = sorted(base["variant"].unique())
+    cmap        = plt.get_cmap("tab10")
+    palette     = {v: cmap(i) for i, v in enumerate(var_palette)}
+    bar_w       = 0.18
+    x_pos       = np.arange(len(CONCURRENCY))
 
-    # Helper, um genau EIN Balkendiagramm zu zeichnen
-    def _draw(ax, g, title_suffix, filename_suffix):
-        offset = -(len(var_order)-1)/2 * bar_w
-        for j, v in enumerate(var_order):
+    # ───────────────────────── Helper: EIN Balkendiagramm ───────────────────
+    def _draw(ax, g, title_suffix: str, filename_suffix: str) -> None:
+        offset = -(len(var_palette) - 1) / 2 * bar_w
+        for j, v in enumerate(var_palette):
             ys = (
                 g[g["variant"] == v]
                   .set_index("concurrency")
                   .reindex(CONCURRENCY)["duration_ms"]
                   .to_numpy()
             )
-            ax.bar(x_pos + offset + j*bar_w,
-                   ys,
-                   width=bar_w,
-                   color=colors[v],
-                   label=v)
+            if not _has_valid_values(ys):
+                continue                     # nichts für diese Variante
+            ax.bar(
+                x_pos + offset + j * bar_w,
+                ys,
+                width=bar_w,
+                color=palette[v],
+                label=v,
+            )
             # Balkenbeschriftung
-            for xp, val in zip(x_pos + offset + j*bar_w, ys):
-                ax.text(xp, val, f"{val:.0f}",
-                        ha="center", va="bottom",
-                        fontsize=6, rotation=90)
+            for xp, val in zip(x_pos + offset + j * bar_w, ys):
+                ax.text(
+                    xp, val, f"{val:.0f}",
+                    ha="center", va="bottom",
+                    fontsize=6, rotation=90,
+                )
+
+        # Wurde überhaupt etwas gezeichnet?
+        if not ax.patches:
+            plt.close(ax.figure)
+            print(f"⚠️  {title_suffix}: keine Daten, Plot übersprungen")
+            return
 
         ax.set_title(f"Average Duration – {title_suffix}")
         ax.set_xlabel("Concurrency (Threads)")
@@ -256,49 +287,75 @@ def bars_conc_variant(df: pd.DataFrame, *, all_users: bool = False) -> None:
         ax.set_xticks(x_pos, [str(c) for c in CONCURRENCY])
         ax.yaxis.grid(True, linestyle=":", alpha=.6)
         ax.legend(title="Variante", fontsize=8)
+
         savefig(f"E_users{filename_suffix}_conc_vs_variant")
         plt.close(ax.figure)
 
-    # -------- alle User zusammen --------
+    # ───────────────────────── alle User zusammen ───────────────────────────
     if all_users:
-        g = (
+        g_all = (
             base.groupby(["concurrency", "variant"], as_index=False)["duration_ms"]
                 .mean()
         )
         fig, ax = plt.subplots(figsize=(8, 4))
-        _draw(ax, g.assign(users="ALL"), "ALL Users", "ALL")
+        _draw(ax, g_all.assign(users="ALL"), "ALL Users", "ALL")
         return
 
-    # -------- getrennt nach User-Größe --------
+    # ───────────────────────── getrennt nach User-Größe ─────────────────────
     for users, g in base.groupby("users"):
         fig, ax = plt.subplots(figsize=(8, 4))
-        _draw(ax, g, f"{users} Users", users)
+        _draw(ax, g, f"{users} Users", str(users))
+
 
 
 def bars_variant_users(df: pd.DataFrame) -> None:
-    base = (df.groupby(["variant", "users"], observed=True)["volume_mb"]   # Ø-Volumen
-              .mean()
-              .reset_index())
+    # Ø-Volumen pro Variante & User-Gruppe
+    base = (
+        df.groupby(["variant", "users"], observed=True)["volume_mb"]
+          .mean()
+          .reset_index()
+    )
 
-    var_order  = sorted(base["variant"].unique())      # pg_normal … neo_optimized
-    user_order = sorted(base["users"].unique())        # 1 000 / 10 000 / …
-    bar_w      = 0.8 / len(user_order)                 # Clusterbreite
+    var_order  = sorted(base["variant"].unique())
+    user_order = sorted(base["users"].unique())
+    bar_w      = 0.8 / len(user_order)               # Clusterbreite
     x_pos      = np.arange(len(var_order))
-    offset0    = -(len(user_order)-1)/2 * bar_w
+    offset0    = -(len(user_order) - 1) / 2 * bar_w
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    cmap = plt.get_cmap("tab10")
+    cmap    = plt.get_cmap("tab10")
 
     for j, users in enumerate(user_order):
-        ys = (base[base["users"] == users]
+        ys = (
+            base[base["users"] == users]
                 .set_index("variant")
                 .reindex(var_order)["volume_mb"]
-                .to_numpy())
-        ax.bar(x_pos + offset0 + j*bar_w,
-               ys,
-               width=bar_w,
-               color=cmap(j),
-               label=f"{users:,} Users")
+                .to_numpy()
+        )
+        if not _has_valid_values(ys):                # komplette User-Gruppe leer?
+            continue
+
+        ax.bar(
+            x_pos + offset0 + j * bar_w,
+            ys,
+            width=bar_w,
+            color=cmap(j),
+            label=f"{users:,} Users",
+        )
+        # optionale Balkenbeschriftung
+        for xp, val in zip(x_pos + offset0 + j * bar_w, ys):
+            if np.isfinite(val):
+                ax.text(
+                    xp, val, f"{val:.1f}",
+                    ha="center", va="bottom",
+                    fontsize=6, rotation=90,
+                )
+
+    # Wurde überhaupt etwas gezeichnet?
+    if not ax.patches:
+        plt.close(fig)
+        print("⚠️  Volume-Plot – keine Daten, Plot übersprungen")
+        return
 
     ax.set_xlabel("Variante")
     ax.set_ylabel("Volume (MB)")
@@ -309,6 +366,7 @@ def bars_variant_users(df: pd.DataFrame) -> None:
 
     savefig("F_variant_vs_users_volume")
     plt.close(fig)
+
 
 # ─────────────────────────  SUMMARY → CSV  ────────────────────────────
 def export_summary_csv(
