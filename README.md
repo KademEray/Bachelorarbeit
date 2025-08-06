@@ -145,23 +145,35 @@ python main.py
 
 ---
 
-## 9. Systemanforderungen & Fehlerbehebung
+## 9. Systemanforderungen & Konfiguration
 
-### Empfohlene Konfiguration
-Der Benchmark ist für die unter Punkt 4 spezifizierte Hardware (6C/12T CPU, 32 GB RAM) optimiert. Für eine reibungslose Ausführung wird eine vergleichbare Konfiguration empfohlen.
+### Empfohlene Konfiguration (32 GB RAM)
+Der Benchmark ist für die unter Punkt 4 spezifizierte Hardware (6C/12T CPU, 32 GB RAM) optimiert. Bei Verwendung eines vergleichbaren Systems sind in der Regel keine Konfigurationsanpassungen für die Ausführung notwendig.
 
-### Fehlerbehebung: Import schlägt fehl (`out of memory`)
-**Ursache:** Der initiale Datenimport ist sehr speicherintensiv, da eine hohe **Batch-Größe** verwendet wird, um die Laufzeit zu verkürzen. Auf Systemen mit weniger als 32 GB RAM kann dies zum Absturz des Datenbank-Containers führen.
+### Mindestkonfiguration (16 GB RAM)
+Eine Ausführung des Benchmarks ist ab **mindestens 16 GB RAM** möglich. Hierfür sind jedoch, insbesondere für die speicherintensive Neo4j-Variante, zwingend die folgenden Konfigurationsanpassungen erforderlich, um Speicherfehler (`out of memory`) zu vermeiden.
 
-1.
-**Lösung:** Docker mihilfe der .wslconfig datei den RAM Limit erhöhen
+**Schritt 1: Docker Desktop RAM-Limit auf 16 GB setzen**
+Es ist entscheidend, das RAM-Limit für das WSL-2-Backend von Docker Desktop auf den vollen verfügbaren Arbeitsspeicher (16 GB) zu setzen. Docker Desktop reserviert sich davon einen Anteil, sodass der VM effektiv ca. 14-15 GB zur Verfügung stehen. Dieser Wert ist für die Neo4j-Konfiguration kritisch.
 
-2.
-**Lösung:** Reduzieren Sie die `BATCH_SIZE`-Variable in den folgenden Skripten manuell (z.B. von `500000` auf `100000`):
-*   `postgresql_normal/insert_normal_postgresql_data.py`
-*   `postgresql_optimized/insert_optimized_postgresql_data.py`
+Die Konfiguration erfolgt über eine **`.wslconfig`-Datei** in Ihrem Windows-Benutzerverzeichnis (`C:\Users\<IhrBenutzername>\`). Erstellen Sie diese Datei, falls sie nicht existiert, mit folgendem Inhalt:
+```ini
+[wsl2]
+memory=16GB
+```
+Nach dem Speichern der Datei ist ein Neustart von Docker Desktop erforderlich.
 
-Diese Anpassung erhöht zwar die Importzeit, ermöglicht aber die Ausführung auf ressourcenschwächeren Systemen. Das eigentliche Performance-Benchmark-Skript muss nicht verändert werden, da die Parallelität Teil des Testdesigns ist.
+**Schritt 2: Neo4j-Speicherkonfiguration anpassen**
+Passen Sie die Speichereinstellungen in der Datei neo4j.conf an, damit sie innerhalb des von Docker zugewiesenen RAM-Limits operiert. Die folgenden Werte sind für ein 16-GB-System validiert (Heap + Page Cache ≈ 15 GB):
+```ini
+# ── HEAP ────────────────────────────────────
+server.memory.heap.initial_size=4g
+server.memory.heap.max_size=4g
+
+# ── PAGE CACHE ─────────────────────────────
+server.memory.pagecache.size=6g
+```
+Hinweis: Für PostgreSQL sind auf einem 16-GB-System in der Regel keine Anpassungen in der postgres-tuning.conf notwendig, da es weniger strikte Anforderungen an die Speichervorkonfiguration stellt.
 
 ---
 
@@ -180,4 +192,4 @@ Diese Anpassung erhöht zwar die Importzeit, ermöglicht aber die Ausführung au
 
 ---
 
-> Letzte Aktualisierung: 05.08.2025
+> Letzte Aktualisierung: 06.08.2025
